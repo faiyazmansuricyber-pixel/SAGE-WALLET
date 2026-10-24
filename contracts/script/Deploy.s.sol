@@ -73,7 +73,10 @@ contract Deploy is Script {
             '  "chainId": 31337,\n',
             '  "entryPoint": "', vm.toString(address(entryPoint)), '",\n',
             '  "wallet": "', vm.toString(address(wallet)), '",\n',
-            '  "merchant": "', vm.toString(address(merchant)), '"\n',
+            '  "merchant": "', vm.toString(address(merchant)), '",\n',
+            '  "owner": "', vm.toString(ownerAddress), '",\n',
+            '  "agent": "', vm.toString(agentAddress), '",\n',
+            '  "goodRecipient": "', vm.toString(address(merchant)), '"\n',
             '}\n'
         );
         vm.writeFile("../shared/addresses.json", json);

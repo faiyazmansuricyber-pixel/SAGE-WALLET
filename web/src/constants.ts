@@ -1,4 +1,4 @@
-import rawAbi from "../../shared/abi/SentinelWallet.json";
+import rawAbi from "../../shared/abi/AgentWallet.json";
 import rawAddresses from "../../shared/addresses.json";
 import rawEntryPointAbi from "./abi/EntryPoint.json";
 import { DEMO_ONLY_OWNER_PRIVATE_KEY, DEMO_ONLY_AGENT_PRIVATE_KEY } from "./demoKeys";

@@ -35,6 +35,8 @@ contract AgentWallet is IAccount, ReentrancyGuard {
     event OwnerExecuted(address target, uint256 value);
     event PolicyUpdated(uint256 perTxLimit, uint256 dailyLimit, uint48 validUntil);
     event RecipientSet(address indexed recipient, bool allowed);
+    event ApprovalSet(bytes32 indexed callHash, uint48 expiry);
+    event CallAllowedSet(address indexed target, bytes4 indexed selector, bool allowed);
 
     // ΓöÇΓöÇ Custom Errors ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
@@ -72,6 +74,8 @@ contract AgentWallet is IAccount, ReentrancyGuard {
     mapping(address => mapping(bytes4 => bool)) private _allowedTargets;
     // recipient => allowed (for ETH transfers with empty calldata)
     mapping(address => bool) private _allowedRecipients;
+    // callHash => expiry for one-time owner overrides
+    mapping(bytes32 => uint48) public approvalExpiry;
 
     // ΓöÇΓöÇ Modifiers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
@@ -139,6 +143,26 @@ contract AgentWallet is IAccount, ReentrancyGuard {
     /// @notice Compatibility function to deposit ETH to EntryPoint for gas prefunding.
     function addDeposit() external payable {
         _entryPoint.depositTo{value: msg.value}(address(this));
+    }
+
+    /// @notice Compatibility function to allow a call selector. Owner only.
+    function setCallAllowed(address target, bytes4 selector, bool allowed) external onlyOwner {
+        _allowedTargets[target][selector] = allowed;
+        emit CallAllowedSet(target, selector, allowed);
+    }
+
+    /// @notice Compatibility function to approve a specific one-time call. Owner only.
+    function approveCall(address target, uint256 value, bytes calldata data, uint48 expiry) external onlyOwner {
+        require(expiry > block.timestamp, "EXPIRY_NOT_FUTURE");
+        bytes32 h = keccak256(abi.encode(target, value, data));
+        approvalExpiry[h] = expiry;
+        emit ApprovalSet(h, expiry);
+    }
+
+    /// @notice Owner withdraw function.
+    function withdraw(address payable to, uint256 amount) external onlyOwner nonReentrant {
+        (bool ok,) = to.call{value: amount}("");
+        require(ok, "WITHDRAW_FAILED");
     }
 
     // ΓöÇΓöÇ Execution functions ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
