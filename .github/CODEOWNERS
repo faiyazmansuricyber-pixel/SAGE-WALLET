@@ -1,0 +1,12 @@
+# CODEOWNERS — Replace @P*_USERNAME with real GitHub usernames
+
+/contracts/src/        @Tufel110
+/contracts/script/     @Tufel110
+/shared/abi/           @Tufel110
+/shared/addresses.json @Tufel110
+/docs/INTERFACE.md     @Tufel110
+/agent/                @kaif-web
+/shared/userop/        @kaif-web
+/web/                  @faiyazmansuricyber-pixel
+/contracts/test/       @LimbachiyaHeet
+/docs/                 @LimbachiyaHeet

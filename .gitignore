@@ -1,20 +1,17 @@
-# Circuits
-circuits/build/
-
-# Trusted setup artifacts (large binary files)
-shared/proving_key.zkey
-shared/*.ptau
-
-# Node modules
+# Dependencies
 node_modules/
 
-# OS files
+# Environment
+.env
+
+# Foundry
+out/
+cache/
+broadcast/
+lib/
+
+# Vite / Frontend
+dist/
+
+# macOS
 .DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-
-# Logs
-*.log
