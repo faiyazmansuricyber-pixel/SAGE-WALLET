@@ -1,12 +1,15 @@
-# CODEOWNERS — Replace @P*_USERNAME with real GitHub usernames
+# CODEOWNERS — Approval Rules
+# All changes require @Tufel110 approval before merging into main.
+*                      @Tufel110
 
+# Domain owners + @Tufel110 approval required on all folders:
 /contracts/src/        @Tufel110
 /contracts/script/     @Tufel110
 /shared/abi/           @Tufel110
 /shared/addresses.json @Tufel110
 /docs/INTERFACE.md     @Tufel110
-/agent/                @kaif-web
-/shared/userop/        @kaif-web
-/web/                  @faiyazmansuricyber-pixel
-/contracts/test/       @LimbachiyaHeet
-/docs/                 @LimbachiyaHeet
+/agent/                @Tufel110 @kaif-web
+/shared/userop/        @Tufel110 @kaif-web
+/web/                  @Tufel110 @faiyazmansuricyber-pixel
+/contracts/test/       @Tufel110 @LimbachiyaHeet
+/docs/                 @Tufel110 @LimbachiyaHeet
