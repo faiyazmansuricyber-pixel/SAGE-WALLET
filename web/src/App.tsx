@@ -1,20 +1,59 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Header } from "./components/Header";
 import { StatusPanel } from "./components/StatusPanel";
+import { AgentSimulator } from "./components/AgentSimulator";
 import { ActionForms } from "./components/ActionForms";
+import { AttackLab } from "./components/AttackLab";
 import { EventFeed } from "./components/EventFeed";
+import { ToastContainer } from "./components/ToastContainer";
 import { publicClient } from "./client";
-import { CONTRACT_ADDRESSES, WALLET_ABI, ZERO_ADDRESS, ANVIL_RPC_URL } from "./constants";
-import { WalletPolicy } from "./types";
+import {
+  CONTRACT_ADDRESSES,
+  WALLET_ABI,
+  ENTRY_POINT_ABI,
+  ZERO_ADDRESS,
+  ANVIL_RPC_URL,
+} from "./constants";
+import { WalletPolicy, Toast, AgentAttempt } from "./types";
+
+let toastId = 0;
 
 export function App() {
   const [policy, setPolicy] = useState<WalletPolicy | null>(null);
   const [isAnvilConnected, setIsAnvilConnected] = useState<boolean>(true);
-  const [anvilError, setAnvilError] = useState<string | null>(null);
   const [blockNumber, setBlockNumber] = useState<bigint | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [attempts, setAttempts] = useState<AgentAttempt[]>([]);
   const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Toast helpers
+  const addToast = useCallback((type: Toast["type"], title: string, message?: string) => {
+    const id = `toast-${++toastId}`;
+    setToasts((prev) => [...prev, { id, type, title, message }]);
+    setTimeout(() => {
+      setToasts((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, exiting: true } : t))
+      );
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, 300);
+    }, 5000);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, exiting: true } : t))
+    );
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 300);
+  }, []);
+
+  const handleNewAttempt = useCallback((attempt: AgentAttempt) => {
+    setAttempts((prev) => [attempt, ...prev]);
+  }, []);
 
   // Fetch full contract state from Anvil
   const fetchContractState = useCallback(async (isManual = false) => {
@@ -23,56 +62,80 @@ export function App() {
     try {
       // 1. Check RPC connection & current block number
       const currentBlock = await publicClient.getBlockNumber();
+      const currentBlockData = await publicClient.getBlock({ blockNumber: currentBlock });
       setBlockNumber(currentBlock);
       setIsAnvilConnected(true);
-      setAnvilError(null);
 
-      // 2. Query policy view functions from SentinelWallet
-      const [agentAddr, perTx, daily, validUntilSec, ethBal] = await Promise.all([
-        publicClient.readContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "agent",
-          args: [],
-        } as any) as Promise<`0x${string}`>,
-        publicClient.readContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "perTxLimit",
-          args: [],
-        } as any) as Promise<bigint>,
-        publicClient.readContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "dailyLimit",
-          args: [],
-        } as any) as Promise<bigint>,
-        publicClient.readContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "validUntil",
-          args: [],
-        } as any) as Promise<number | bigint>,
-        publicClient.getBalance({
-          address: CONTRACT_ADDRESSES.wallet,
-        }),
-      ]);
+      // 2. Check if code exists at the wallet address
+      const code = await publicClient.getCode({ address: CONTRACT_ADDRESSES.wallet });
+      const isDeployed = Boolean(code && code !== "0x" && code.length > 2);
 
-      // 3. Query spent today: spentOnDay(floor(now / 86400))
-      // 1 day = 86400 seconds (86400000 ms)
-      const currentDay = BigInt(Math.floor(Date.now() / 86400000));
-      let spent = 0n;
-      try {
-        const rawSpent = await publicClient.readContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "spentOnDay",
-          args: [currentDay],
+      if (!isDeployed) {
+        setPolicy({
+          agent: ZERO_ADDRESS,
+          isRevoked: false,
+          perTxLimit: 0n,
+          dailyLimit: 0n,
+          validUntil: 0,
+          spentToday: 0n,
+          ethBalance: 0n,
+          entryPointDeposit: 0n,
+          dayNumber: 0,
+          isDeployed: false,
+          isAnvilOnline: true,
         });
-        spent = BigInt(rawSpent as any);
-      } catch {
-        spent = 0n;
+        setIsLoading(false);
+        if (isManual) setIsRefreshing(false);
+        return;
       }
+
+      // 3. Query policy view functions from SentinelWallet & EntryPoint
+      const currentDayNumber = Math.floor(Number(currentBlockData.timestamp) / 86400);
+
+      const [agentAddr, perTx, daily, validUntilSec, ethBal, epDeposit, spentTodayVal] =
+        await Promise.all([
+          publicClient.readContract({
+            address: CONTRACT_ADDRESSES.wallet,
+            abi: WALLET_ABI,
+            functionName: "agent",
+            args: [],
+          } as any) as Promise<`0x${string}`>,
+          publicClient.readContract({
+            address: CONTRACT_ADDRESSES.wallet,
+            abi: WALLET_ABI,
+            functionName: "perTxLimit",
+            args: [],
+          } as any) as Promise<bigint>,
+          publicClient.readContract({
+            address: CONTRACT_ADDRESSES.wallet,
+            abi: WALLET_ABI,
+            functionName: "dailyLimit",
+            args: [],
+          } as any) as Promise<bigint>,
+          publicClient.readContract({
+            address: CONTRACT_ADDRESSES.wallet,
+            abi: WALLET_ABI,
+            functionName: "validUntil",
+            args: [],
+          } as any) as Promise<number | bigint>,
+          publicClient.getBalance({
+            address: CONTRACT_ADDRESSES.wallet,
+          }),
+          publicClient.readContract({
+            address: CONTRACT_ADDRESSES.entryPoint,
+            abi: ENTRY_POINT_ABI,
+            functionName: "balanceOf",
+            args: [CONTRACT_ADDRESSES.wallet],
+          } as any) as Promise<bigint>,
+          publicClient
+            .readContract({
+              address: CONTRACT_ADDRESSES.wallet,
+              abi: WALLET_ABI,
+              functionName: "spentOnDay",
+              args: [BigInt(currentDayNumber)],
+            } as any)
+            .catch(() => 0n) as Promise<bigint>,
+        ]);
 
       const agentString = String(agentAddr || "");
       const isRevoked =
@@ -86,14 +149,32 @@ export function App() {
         perTxLimit: BigInt(perTx),
         dailyLimit: BigInt(daily),
         validUntil: Number(validUntilSec),
-        spentToday: spent,
+        spentToday: BigInt(spentTodayVal || 0n),
         ethBalance: ethBal,
+        entryPointDeposit: BigInt(epDeposit || 0n),
+        dayNumber: currentDayNumber,
+        isDeployed: true,
+        isAnvilOnline: true,
       });
     } catch (err: any) {
       console.error("Anvil connection or read error:", err);
       setIsAnvilConnected(false);
-      setAnvilError(
-        `Unable to connect to Anvil RPC node at ${ANVIL_RPC_URL}. Please ensure Anvil is running locally: anvil --code-size-limit 50000`
+      setPolicy((prev) =>
+        prev
+          ? { ...prev, isAnvilOnline: false }
+          : {
+              agent: ZERO_ADDRESS,
+              isRevoked: false,
+              perTxLimit: 0n,
+              dailyLimit: 0n,
+              validUntil: 0,
+              spentToday: 0n,
+              ethBalance: 0n,
+              entryPointDeposit: 0n,
+              dayNumber: 0,
+              isDeployed: false,
+              isAnvilOnline: false,
+            }
       );
     } finally {
       setIsLoading(false);
@@ -101,7 +182,7 @@ export function App() {
     }
   }, []);
 
-  // Poll every 2 seconds as required by specification
+  // Poll every 2 seconds
   useEffect(() => {
     fetchContractState();
 
@@ -116,6 +197,9 @@ export function App() {
 
   return (
     <div className="app-container">
+      {/* Toast notifications */}
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+
       {/* Header bar */}
       <Header
         isAnvilConnected={isAnvilConnected}
@@ -124,44 +208,37 @@ export function App() {
         isRefreshing={isRefreshing}
       />
 
-      {/* Anvil Offline Alert Banner */}
-      {!isAnvilConnected && anvilError && (
-        <div className="error-banner" role="alert">
-          <div className="error-banner-content">
-            <svg
-              width="24"
-              height="24"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="#ef4444"
-              strokeWidth="2"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            <div>
-              <strong>Anvil Connection Error:</strong> {anvilError}
-            </div>
-          </div>
-          <button
-            onClick={() => fetchContractState(true)}
-            className="quick-btn"
-            style={{ color: "#ef4444", borderColor: "rgba(239, 68, 68, 0.4)" }}
-          >
-            Retry Connection
-          </button>
-        </div>
-      )}
+      <main className="main-content">
+        {/* 1. Status Panel */}
+        <StatusPanel policy={policy} isLoading={isLoading} />
 
-      {/* Section 1: Policy & Status Panel */}
-      <StatusPanel policy={policy} isLoading={isLoading} />
+        {/* 2. Agent Simulator */}
+        <AgentSimulator
+          attempts={attempts}
+          onNewAttempt={handleNewAttempt}
+          onRefreshPolicy={() => fetchContractState(true)}
+          addToast={addToast}
+        />
 
-      {/* Section 2 & 3: Owner Actions and Live Event Feed */}
-      <div className="dashboard-grid">
-        <ActionForms onActionComplete={() => fetchContractState(true)} />
-        <EventFeed />
-      </div>
+        {/* 3. Owner Controls */}
+        <ActionForms
+          policy={policy}
+          onActionComplete={() => fetchContractState(true)}
+          addToast={addToast}
+        />
+
+        {/* 4. Attack Lab */}
+        <AttackLab
+          dailyLimit={policy?.dailyLimit || 0n}
+          spentToday={policy?.spentToday || 0n}
+          onRefreshPolicy={() => fetchContractState(true)}
+          onNewAttempt={handleNewAttempt}
+          addToast={addToast}
+        />
+
+        {/* 5. Event Feed */}
+        <EventFeed attempts={attempts} />
+      </main>
     </div>
   );
 }

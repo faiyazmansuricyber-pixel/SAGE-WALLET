@@ -1,24 +1,31 @@
-import React, { useState } from "react";
-import { parseEther, isAddress } from "viem";
+import React, { useState, useEffect } from "react";
+import { parseEther, formatEther, isAddress } from "viem";
 import { walletClient, publicClient, ownerAccount } from "../client";
-import { CONTRACT_ADDRESSES, WALLET_ABI } from "../constants";
-import { TxStatus } from "../types";
+import { CONTRACT_ADDRESSES, WALLET_ABI, formatEth } from "../constants";
+import { TxStatus, WalletPolicy, Toast } from "../types";
 
 interface ActionFormsProps {
+  policy: WalletPolicy | null;
   onActionComplete: () => void;
+  addToast: (type: Toast["type"], title: string, message?: string) => void;
 }
 
-type TabType = "policy" | "recipient" | "approve" | "deposit" | "revoke";
+type TabType = "policy" | "recipient" | "fundWallet" | "deposit" | "agent";
 
-export const ActionForms: React.FC<ActionFormsProps> = ({ onActionComplete }) => {
+export const ActionForms: React.FC<ActionFormsProps> = ({
+  policy,
+  onActionComplete,
+  addToast,
+}) => {
   const [activeTab, setActiveTab] = useState<TabType>("policy");
   const [txStatus, setTxStatus] = useState<TxStatus>({ status: "idle" });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Set Policy state
-  const [perTxLimit, setPerTxLimit] = useState("0.5");
-  const [dailyLimit, setDailyLimit] = useState("2.0");
-  const [expiryHours, setExpiryHours] = useState("24");
+  const [perTxLimit, setPerTxLimit] = useState("1.0");
+  const [dailyLimit, setDailyLimit] = useState("3.0");
+  const [expiryHours, setExpiryHours] = useState("168");
+  const [showPolicyConfirm, setShowPolicyConfirm] = useState(false);
 
   // Set Recipient state
   const [recipientAddress, setRecipientAddress] = useState<string>(
@@ -26,18 +33,50 @@ export const ActionForms: React.FC<ActionFormsProps> = ({ onActionComplete }) =>
   );
   const [isRecipientAllowed, setIsRecipientAllowed] = useState(true);
 
-  // Approve Call state
-  const [approveTarget, setApproveTarget] = useState<string>(
-    CONTRACT_ADDRESSES.goodRecipient || ""
-  );
-  const [approveValue, setApproveValue] = useState("0.1");
-  const [approveExpiryMinutes, setApproveExpiryMinutes] = useState("30");
+  // Fund Wallet state
+  const [fundWalletAmount, setFundWalletAmount] = useState("2.0");
 
   // Add Deposit state
   const [depositAmount, setDepositAmount] = useState("1.0");
 
-  // Revoke state
+  // Agent Management state
   const [confirmRevoke, setConfirmRevoke] = useState(false);
+  const [newAgentAddress, setNewAgentAddress] = useState<string>(CONTRACT_ADDRESSES.agent);
+
+  // Prefill policy form inputs from on-chain values when policy loads
+  useEffect(() => {
+    if (policy && policy.perTxLimit > 0n) {
+      setPerTxLimit(formatEther(policy.perTxLimit));
+    } else {
+      setPerTxLimit("1.0");
+    }
+
+    if (policy && policy.dailyLimit > 0n) {
+      setDailyLimit(formatEther(policy.dailyLimit));
+    } else {
+      setDailyLimit("3.0");
+    }
+
+    if (policy && policy.validUntil > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const remainingSec = policy.validUntil - nowSec;
+      if (remainingSec > 0) {
+        setExpiryHours((remainingSec / 3600).toFixed(1));
+      } else {
+        setExpiryHours("168");
+      }
+    } else {
+      setExpiryHours("168");
+    }
+  }, [policy?.perTxLimit, policy?.dailyLimit, policy?.validUntil]);
+
+  // Current on-chain display values
+  const currentPerTx = policy && policy.perTxLimit > 0n ? formatEth(policy.perTxLimit, 4) : "None";
+  const currentDaily = policy && policy.dailyLimit > 0n ? formatEth(policy.dailyLimit, 4) : "None";
+  const currentHoursLeft =
+    policy && policy.validUntil > 0
+      ? Math.max(0, (policy.validUntil - Math.floor(Date.now() / 1000)) / 3600).toFixed(1)
+      : "None";
 
   // Helper to extract revert reason
   const parseRevertReason = (err: any): string => {
@@ -52,7 +91,6 @@ export const ActionForms: React.FC<ActionFormsProps> = ({ onActionComplete }) =>
     return "Transaction failed";
   };
 
-  // Helper to send transactions with status updates
   const executeTx = async (
     actionName: string,
     sendFn: () => Promise<`0x${string}`>
@@ -62,6 +100,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({ onActionComplete }) =>
       status: "pending",
       message: `Broadcasting ${actionName} to Anvil...`,
     });
+    addToast("pending", `${actionName}`, "Broadcasting to Anvil...");
 
     try {
       const hash = await sendFn();
@@ -76,605 +115,562 @@ export const ActionForms: React.FC<ActionFormsProps> = ({ onActionComplete }) =>
         setTxStatus({
           status: "success",
           hash,
-          message: `${actionName} confirmed successfully in block #${receipt.blockNumber}!`,
+          message: `${actionName} confirmed in block #${receipt.blockNumber}!`,
         });
+        addToast("success", `${actionName} Confirmed`, `Tx: ${hash.slice(0, 10)}...`);
         onActionComplete();
       } else {
         setTxStatus({
           status: "error",
           hash,
-          error: `${actionName} reverted on chain.`,
+          error: "Transaction reverted on chain.",
         });
+        addToast("error", `${actionName} Reverted`, "Transaction execution reverted.");
       }
     } catch (err: any) {
-      console.error(err);
+      const reason = parseRevertReason(err);
       setTxStatus({
         status: "error",
-        error: parseRevertReason(err),
+        error: reason,
       });
+      addToast("error", `${actionName} Failed`, reason);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Handler: Set Policy
-  const handleSetPolicy = (e: React.FormEvent) => {
+  // 1. Set Policy handler
+  const handleSetPolicy = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!perTxLimit || !dailyLimit || !expiryHours) return;
-
-    try {
-      const perTxWei = parseEther(perTxLimit);
-      const dailyWei = parseEther(dailyLimit);
-      const nowSec = Math.floor(Date.now() / 1000);
-      const validUntilSec = nowSec + Math.max(1, Math.floor(parseFloat(expiryHours) * 3600));
-
-      executeTx("Set Policy", () =>
-        walletClient.writeContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "setPolicy",
-          args: [perTxWei, dailyWei, validUntilSec],
-          account: ownerAccount,
-        })
-      );
-    } catch (err: any) {
-      setTxStatus({ status: "error", error: err.message || "Invalid input values" });
-    }
-  };
-
-  // Handler: Set Recipient
-  const handleSetRecipient = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isAddress(recipientAddress)) {
-      setTxStatus({ status: "error", error: "Please enter a valid Ethereum address" });
+    if (!showPolicyConfirm) {
+      setShowPolicyConfirm(true);
       return;
     }
 
-    executeTx(`Set Recipient (${isRecipientAllowed ? "Allow" : "Disallow"})`, () =>
+    setShowPolicyConfirm(false);
+
+    let perTxWei: bigint;
+    let dailyWei: bigint;
+    try {
+      perTxWei = parseEther(perTxLimit);
+      dailyWei = parseEther(dailyLimit);
+    } catch {
+      setTxStatus({ status: "error", error: "Invalid numeric ETH values." });
+      return;
+    }
+
+    if (perTxWei > dailyWei) {
+      setTxStatus({
+        status: "error",
+        error: "Per-tx limit cannot exceed daily limit (PERTX_GT_DAILY).",
+      });
+      return;
+    }
+
+    const hours = parseFloat(expiryHours);
+    if (isNaN(hours) || hours <= 0) {
+      setTxStatus({ status: "error", error: "Expiry hours must be greater than 0." });
+      return;
+    }
+
+    const validUntilTimestamp = Math.floor(Date.now() / 1000) + Math.round(hours * 3600);
+
+    await executeTx("Set Policy", () =>
       walletClient.writeContract({
+        account: ownerAccount,
         address: CONTRACT_ADDRESSES.wallet,
         abi: WALLET_ABI,
-        functionName: "setRecipient",
-        args: [recipientAddress as `0x${string}`, isRecipientAllowed],
-        account: ownerAccount,
+        functionName: "setPolicy",
+        args: [perTxWei, dailyWei, validUntilTimestamp],
       })
     );
   };
 
-  // Handler: Approve Call (Target, value, empty 0x data, expiry in minutes)
-  const handleApproveCall = (e: React.FormEvent) => {
+  // 2. Set Recipient handler
+  const handleSetRecipient = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isAddress(approveTarget)) {
-      setTxStatus({ status: "error", error: "Please enter a valid target address" });
+    if (!isAddress(recipientAddress)) {
+      setTxStatus({ status: "error", error: "Invalid Ethereum address." });
       return;
     }
 
-    try {
-      const valueWei = parseEther(approveValue);
-      const nowSec = Math.floor(Date.now() / 1000);
-      const expirySec = nowSec + Math.max(1, Math.floor(parseFloat(approveExpiryMinutes) * 60));
-
-      executeTx("Approve Call (One-Time Override)", () =>
-        walletClient.writeContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "approveCall",
-          args: [approveTarget as `0x${string}`, valueWei, "0x", expirySec],
-          account: ownerAccount,
-        })
-      );
-    } catch (err: any) {
-      setTxStatus({ status: "error", error: err.message || "Invalid input values" });
-    }
-  };
-
-  // Handler: Add Deposit
-  const handleAddDeposit = (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const depositWei = parseEther(depositAmount);
-      executeTx("Add Deposit to EntryPoint", () =>
-        walletClient.writeContract({
-          address: CONTRACT_ADDRESSES.wallet,
-          abi: WALLET_ABI,
-          functionName: "addDeposit",
-          args: [],
-          value: depositWei,
-          account: ownerAccount,
-        })
-      );
-    } catch (err: any) {
-      setTxStatus({ status: "error", error: err.message || "Invalid deposit amount" });
-    }
-  };
-
-  // Handler: Revoke Agent
-  const handleRevokeAgent = () => {
-    setConfirmRevoke(false);
-    executeTx("Revoke Agent", () =>
+    await executeTx(`Set Recipient (${isRecipientAllowed ? "Allow" : "Disallow"})`, () =>
       walletClient.writeContract({
+        account: ownerAccount,
+        address: CONTRACT_ADDRESSES.wallet,
+        abi: WALLET_ABI,
+        functionName: "setRecipient",
+        args: [recipientAddress as `0x${string}`, isRecipientAllowed],
+      })
+    );
+  };
+
+  // 3. Fund Wallet handler
+  const handleFundWallet = async (e: React.FormEvent) => {
+    e.preventDefault();
+    let val: bigint;
+    try {
+      val = parseEther(fundWalletAmount);
+    } catch {
+      setTxStatus({ status: "error", error: "Invalid ETH amount." });
+      return;
+    }
+
+    await executeTx("Fund Wallet", () =>
+      walletClient.sendTransaction({
+        account: ownerAccount,
+        to: CONTRACT_ADDRESSES.wallet,
+        value: val,
+      })
+    );
+  };
+
+  // 4. Add Deposit to EntryPoint handler
+  const handleAddDeposit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    let val: bigint;
+    try {
+      val = parseEther(depositAmount);
+    } catch {
+      setTxStatus({ status: "error", error: "Invalid ETH amount." });
+      return;
+    }
+
+    await executeTx("Add EntryPoint Deposit", () =>
+      walletClient.writeContract({
+        account: ownerAccount,
+        address: CONTRACT_ADDRESSES.wallet,
+        abi: WALLET_ABI,
+        functionName: "addDeposit",
+        args: [],
+        value: val,
+      } as any)
+    );
+  };
+
+  // 5. Revoke Agent handler
+  const handleRevokeAgent = async () => {
+    if (!confirmRevoke) {
+      setConfirmRevoke(true);
+      return;
+    }
+    setConfirmRevoke(false);
+
+    await executeTx("Revoke Agent", () =>
+      walletClient.writeContract({
+        account: ownerAccount,
         address: CONTRACT_ADDRESSES.wallet,
         abi: WALLET_ABI,
         functionName: "revokeAgent",
         args: [],
+      } as any)
+    );
+  };
+
+  // 6. Restore / Set Agent handler
+  const handleSetAgent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAddress(newAgentAddress)) {
+      setTxStatus({ status: "error", error: "Invalid agent address." });
+      return;
+    }
+
+    await executeTx("Set Agent", () =>
+      walletClient.writeContract({
         account: ownerAccount,
+        address: CONTRACT_ADDRESSES.wallet,
+        abi: WALLET_ABI,
+        functionName: "setAgent",
+        args: [newAgentAddress as `0x${string}`],
       })
     );
   };
 
   return (
-    <section className="panel-card" aria-label="Owner Actions">
-      <div className="panel-title-bar">
-        <div className="panel-title">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <path d="M12 20h9" />
-            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-          </svg>
-          Owner Governance &amp; Controls
+    <section className="dashboard-card owner-controls-panel" id="owner-controls">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Owner Administration Controls</h2>
+          <p className="card-subtitle">
+            Configure spending boundaries, allowlists, gas deposits, and agent delegation
+          </p>
         </div>
-        <div className="panel-badge">Signed by Anvil Account #0</div>
+        <span className="badge badge-purple">Account #0 (Owner)</span>
       </div>
 
       {/* Tabs */}
-      <div className="action-tabs">
+      <div className="tab-bar">
         <button
-          className={`action-tab-btn ${activeTab === "policy" ? "active" : ""}`}
+          type="button"
+          className={`tab-btn ${activeTab === "policy" ? "active" : ""}`}
           onClick={() => {
             setActiveTab("policy");
-            setTxStatus({ status: "idle" });
+            setShowPolicyConfirm(false);
           }}
         >
           Set Policy
         </button>
         <button
-          className={`action-tab-btn ${activeTab === "recipient" ? "active" : ""}`}
-          onClick={() => {
-            setActiveTab("recipient");
-            setTxStatus({ status: "idle" });
-          }}
+          type="button"
+          className={`tab-btn ${activeTab === "recipient" ? "active" : ""}`}
+          onClick={() => setActiveTab("recipient")}
         >
-          Set Recipient
+          Allowlist
         </button>
         <button
-          className={`action-tab-btn ${activeTab === "approve" ? "active" : ""}`}
-          onClick={() => {
-            setActiveTab("approve");
-            setTxStatus({ status: "idle" });
-          }}
+          type="button"
+          className={`tab-btn ${activeTab === "fundWallet" ? "active" : ""}`}
+          onClick={() => setActiveTab("fundWallet")}
         >
-          Approve Call
+          Fund Wallet
         </button>
         <button
-          className={`action-tab-btn ${activeTab === "deposit" ? "active" : ""}`}
-          onClick={() => {
-            setActiveTab("deposit");
-            setTxStatus({ status: "idle" });
-          }}
+          type="button"
+          className={`tab-btn ${activeTab === "deposit" ? "active" : ""}`}
+          onClick={() => setActiveTab("deposit")}
         >
-          Add Deposit
+          Gas Deposit
         </button>
         <button
-          className={`action-tab-btn ${activeTab === "revoke" ? "active" : ""}`}
-          style={{
-            color: activeTab === "revoke" ? "white" : "#f87171",
-            background: activeTab === "revoke" ? "#dc2626" : undefined,
-          }}
+          type="button"
+          className={`tab-btn ${activeTab === "agent" ? "active" : ""}`}
           onClick={() => {
-            setActiveTab("revoke");
-            setTxStatus({ status: "idle" });
+            setActiveTab("agent");
+            setConfirmRevoke(false);
           }}
         >
-          Revoke Agent
+          Agent Key
         </button>
       </div>
 
-      {/* Tab 1: Set Policy Form */}
-      {activeTab === "policy" && (
-        <form onSubmit={handleSetPolicy} className="form-body">
-          <div className="form-group">
-            <label className="form-label">
-              <span>Per-Transaction Limit</span>
-              <span className="form-label-desc">Max ETH per call</span>
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="0"
-              value={perTxLimit}
-              onChange={(e) => setPerTxLimit(e.target.value)}
-              className="form-input mono"
-              placeholder="0.5"
-              required
-            />
-            <div className="quick-preset-row">
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setPerTxLimit("0.25")}
-              >
-                0.25 ETH
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setPerTxLimit("0.5")}
-              >
-                0.5 ETH
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setPerTxLimit("1.0")}
-              >
-                1.0 ETH
-              </button>
+      <div className="tab-content">
+        {/* TAB 1: SET POLICY */}
+        {activeTab === "policy" && (
+          <form onSubmit={handleSetPolicy} className="form-grid">
+            <div className="form-group">
+              <label className="form-label" htmlFor="policy-pertx">
+                Per-Transaction Limit (ETH)
+              </label>
+              <input
+                id="policy-pertx"
+                type="text"
+                className="form-input"
+                value={perTxLimit}
+                onChange={(e) => setPerTxLimit(e.target.value)}
+                required
+              />
+              <span className="form-hint text-xs text-muted">
+                current: {currentPerTx} ETH
+              </span>
             </div>
-          </div>
 
-          <div className="form-group">
-            <label className="form-label">
-              <span>Daily Limit</span>
-              <span className="form-label-desc">Max total ETH per UTC day</span>
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="0"
-              value={dailyLimit}
-              onChange={(e) => setDailyLimit(e.target.value)}
-              className="form-input mono"
-              placeholder="2.0"
-              required
-            />
-            <div className="quick-preset-row">
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setDailyLimit("1.0")}
-              >
-                1.0 ETH
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setDailyLimit("2.0")}
-              >
-                2.0 ETH
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setDailyLimit("5.0")}
-              >
-                5.0 ETH
-              </button>
+            <div className="form-group">
+              <label className="form-label" htmlFor="policy-daily">
+                Daily Limit (ETH)
+              </label>
+              <input
+                id="policy-daily"
+                type="text"
+                className="form-input"
+                value={dailyLimit}
+                onChange={(e) => setDailyLimit(e.target.value)}
+                required
+              />
+              <span className="form-hint text-xs text-muted">
+                current: {currentDaily} ETH
+              </span>
             </div>
-          </div>
 
-          <div className="form-group">
-            <label className="form-label">
-              <span>Policy Expiry Duration</span>
-              <span className="form-label-desc">Hours from now</span>
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="0.1"
-              value={expiryHours}
-              onChange={(e) => setExpiryHours(e.target.value)}
-              className="form-input mono"
-              placeholder="24"
-              required
-            />
-            <div className="quick-preset-row">
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setExpiryHours("6")}
-              >
-                +6 Hours
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setExpiryHours("24")}
-              >
-                +24 Hours
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setExpiryHours("168")}
-              >
-                +7 Days
-              </button>
+            <div className="form-group form-col-full">
+              <label className="form-label" htmlFor="policy-expiry">
+                Policy Validity Duration (Hours from now)
+              </label>
+              <input
+                id="policy-expiry"
+                type="text"
+                className="form-input"
+                value={expiryHours}
+                onChange={(e) => setExpiryHours(e.target.value)}
+                required
+              />
+              <span className="form-hint text-xs text-muted">
+                current remaining: {currentHoursLeft} hours
+              </span>
             </div>
-          </div>
 
-          <button type="submit" className="submit-btn" disabled={isSubmitting}>
-            {isSubmitting ? "Broadcasting..." : "Save Policy (setPolicy)"}
-          </button>
-        </form>
-      )}
-
-      {/* Tab 2: Set Recipient Form */}
-      {activeTab === "recipient" && (
-        <form onSubmit={handleSetRecipient} className="form-body">
-          <div className="form-group">
-            <label className="form-label">
-              <span>Recipient Address</span>
-              <span className="form-label-desc">Target contract or merchant</span>
-            </label>
-            <input
-              type="text"
-              value={recipientAddress}
-              onChange={(e) => setRecipientAddress(e.target.value)}
-              className="form-input mono"
-              placeholder="0x..."
-              required
-            />
-            <div className="quick-preset-row">
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() =>
-                  setRecipientAddress(CONTRACT_ADDRESSES.goodRecipient || "")
-                }
-              >
-                Use Good Recipient Demo
-              </button>
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">
-              <span>Allowlist Status</span>
-            </label>
-            <div className="toggle-group">
-              <button
-                type="button"
-                className={`toggle-option ${
-                  isRecipientAllowed ? "active-allow" : ""
-                }`}
-                onClick={() => setIsRecipientAllowed(true)}
-              >
-                ✓ Allow Recipient (true)
-              </button>
-              <button
-                type="button"
-                className={`toggle-option ${
-                  !isRecipientAllowed ? "active-disallow" : ""
-                }`}
-                onClick={() => setIsRecipientAllowed(false)}
-              >
-                ✕ Block Recipient (false)
-              </button>
-            </div>
-          </div>
-
-          <button type="submit" className="submit-btn" disabled={isSubmitting}>
-            {isSubmitting ? "Broadcasting..." : "Update Recipient (setRecipient)"}
-          </button>
-        </form>
-      )}
-
-      {/* Tab 3: Approve Call Form */}
-      {activeTab === "approve" && (
-        <form onSubmit={handleApproveCall} className="form-body">
-          <p style={{ fontSize: "0.86rem", color: "var(--text-secondary)" }}>
-            Approve an out-of-policy single ETH transfer override without raising
-            daily limits. Data is set to empty bytes (<code>0x</code>).
-          </p>
-
-          <div className="form-group">
-            <label className="form-label">
-              <span>Target Address</span>
-              <span className="form-label-desc">Recipient of approved call</span>
-            </label>
-            <input
-              type="text"
-              value={approveTarget}
-              onChange={(e) => setApproveTarget(e.target.value)}
-              className="form-input mono"
-              placeholder="0x..."
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">
-              <span>Value (ETH)</span>
-              <span className="form-label-desc">Amount to approve</span>
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="0"
-              value={approveValue}
-              onChange={(e) => setApproveValue(e.target.value)}
-              className="form-input mono"
-              placeholder="0.1"
-              required
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">
-              <span>Approval Expiry</span>
-              <span className="form-label-desc">Minutes from now</span>
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="1"
-              value={approveExpiryMinutes}
-              onChange={(e) => setApproveExpiryMinutes(e.target.value)}
-              className="form-input mono"
-              placeholder="30"
-              required
-            />
-            <div className="quick-preset-row">
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setApproveExpiryMinutes("10")}
-              >
-                10 mins
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setApproveExpiryMinutes("30")}
-              >
-                30 mins
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setApproveExpiryMinutes("60")}
-              >
-                60 mins
-              </button>
-            </div>
-          </div>
-
-          <button type="submit" className="submit-btn" disabled={isSubmitting}>
-            {isSubmitting ? "Broadcasting..." : "Grant Approval (approveCall)"}
-          </button>
-        </form>
-      )}
-
-      {/* Tab 4: Add Deposit Form */}
-      {activeTab === "deposit" && (
-        <form onSubmit={handleAddDeposit} className="form-body">
-          <p style={{ fontSize: "0.86rem", color: "var(--text-secondary)" }}>
-            Deposits native ETH directly into the ERC-4337 EntryPoint contract on
-            behalf of this wallet to pay for agent UserOp gas fees.
-          </p>
-
-          <div className="form-group">
-            <label className="form-label">
-              <span>Deposit Amount</span>
-              <span className="form-label-desc">Payable ETH value</span>
-            </label>
-            <input
-              type="number"
-              step="any"
-              min="0.01"
-              value={depositAmount}
-              onChange={(e) => setDepositAmount(e.target.value)}
-              className="form-input mono"
-              placeholder="1.0"
-              required
-            />
-            <div className="quick-preset-row">
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setDepositAmount("0.5")}
-              >
-                0.5 ETH
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setDepositAmount("1.0")}
-              >
-                1.0 ETH
-              </button>
-              <button
-                type="button"
-                className="quick-btn"
-                onClick={() => setDepositAmount("3.0")}
-              >
-                3.0 ETH
-              </button>
-            </div>
-          </div>
-
-          <button type="submit" className="submit-btn" disabled={isSubmitting}>
-            {isSubmitting ? "Broadcasting..." : "Deposit to EntryPoint (addDeposit)"}
-          </button>
-        </form>
-      )}
-
-      {/* Tab 5: Revoke Agent */}
-      {activeTab === "revoke" && (
-        <div className="form-body">
-          <p style={{ fontSize: "0.88rem", color: "#fca5a5", lineHeight: 1.5 }}>
-            Revoking the agent key instantly clears the stored agent address to{" "}
-            <code>0x0000000000000000000000000000000000000000</code>. Any further
-            ERC-4337 UserOperations signed by the agent key will be rejected
-            immediately.
-          </p>
-
-          {!confirmRevoke ? (
-            <button
-              type="button"
-              className="submit-btn danger"
-              onClick={() => setConfirmRevoke(true)}
-              disabled={isSubmitting}
-            >
-              Initiate Agent Revocation (revokeAgent)
-            </button>
-          ) : (
-            <div className="confirm-box">
-              <div className="confirm-text">
-                ⚠️ <strong>Confirm Emergency Revocation:</strong> Are you sure you
-                want to revoke the agent? The agent key will be permanently
-                deactivated until a new agent is configured.
+            {/* Confirmation Box if clicked */}
+            {showPolicyConfirm && (
+              <div className="confirm-box form-col-full">
+                <div className="confirm-text text-sm">
+                  <strong>Confirm Policy Replacement:</strong>
+                  <br />
+                  Old: {currentPerTx} ETH / {currentDaily} ETH ({currentHoursLeft}h)
+                  <br />
+                  New: {perTxLimit} ETH / {dailyLimit} ETH ({expiryHours}h)
+                </div>
+                <div className="confirm-actions">
+                  <button
+                    type="submit"
+                    className="btn btn-primary btn-sm"
+                    disabled={isSubmitting}
+                  >
+                    Yes, Apply New Policy
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setShowPolicyConfirm(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
-              <div className="confirm-btn-row">
+            )}
+
+            {!showPolicyConfirm && (
+              <div className="form-col-full">
                 <button
-                  type="button"
-                  className="cancel-btn"
-                  onClick={() => setConfirmRevoke(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="submit-btn danger"
-                  onClick={handleRevokeAgent}
+                  type="submit"
+                  className="btn btn-primary"
                   disabled={isSubmitting}
                 >
-                  {isSubmitting ? "Revoking..." : "Yes, Revoke Agent Now"}
+                  {isSubmitting ? "Updating Policy..." : "Update Policy"}
                 </button>
               </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </form>
+        )}
 
-      {/* Transaction Status & Hash Feedback */}
-      {txStatus.status !== "idle" && (
-        <div className={`feedback-box ${txStatus.status}`}>
-          <div style={{ fontWeight: 600 }}>
-            {txStatus.status === "pending" && "⏳ Processing Transaction"}
-            {txStatus.status === "success" && "✓ Transaction Confirmed"}
-            {txStatus.status === "error" && "✕ Transaction Failed"}
+        {/* TAB 2: RECIPIENT */}
+        {activeTab === "recipient" && (
+          <form onSubmit={handleSetRecipient} className="form-grid">
+            <div className="form-group form-col-full">
+              <label className="form-label" htmlFor="rec-address">
+                Recipient Address
+              </label>
+              <input
+                id="rec-address"
+                type="text"
+                className="form-input font-mono"
+                value={recipientAddress}
+                onChange={(e) => setRecipientAddress(e.target.value.trim())}
+                required
+              />
+              <span className="form-hint text-xs text-muted">
+                Good recipient preset: {CONTRACT_ADDRESSES.goodRecipient}
+              </span>
+            </div>
+
+            <div className="form-group form-col-full">
+              <label className="form-label">Allowlist Status</label>
+              <div className="radio-group">
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="allowOption"
+                    checked={isRecipientAllowed}
+                    onChange={() => setIsRecipientAllowed(true)}
+                  />
+                  <span>Allowed (Agent can transfer ETH to this address)</span>
+                </label>
+                <label className="radio-label">
+                  <input
+                    type="radio"
+                    name="allowOption"
+                    checked={!isRecipientAllowed}
+                    onChange={() => setIsRecipientAllowed(false)}
+                  />
+                  <span>Disallowed (Block agent transfers)</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="form-col-full">
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? "Updating Recipient..." : "Save Recipient Setting"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* TAB 3: FUND WALLET */}
+        {activeTab === "fundWallet" && (
+          <form onSubmit={handleFundWallet} className="form-grid">
+            <div className="form-group form-col-full">
+              <label className="form-label" htmlFor="fund-amount">
+                ETH Amount to Send to Wallet
+              </label>
+              <input
+                id="fund-amount"
+                type="text"
+                className="form-input"
+                placeholder="2.0"
+                value={fundWalletAmount}
+                onChange={(e) => setFundWalletAmount(e.target.value)}
+                required
+              />
+              <span className="form-hint text-xs text-muted">
+                Transfers native ETH from Owner account #0 directly to Sentinel Wallet address
+              </span>
+            </div>
+
+            <div className="form-col-full">
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? "Funding Wallet..." : "Fund Wallet with ETH"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* TAB 4: GAS DEPOSIT */}
+        {activeTab === "deposit" && (
+          <form onSubmit={handleAddDeposit} className="form-grid">
+            <div className="form-group form-col-full">
+              <label className="form-label" htmlFor="deposit-amount">
+                ETH Amount to Deposit to EntryPoint
+              </label>
+              <input
+                id="deposit-amount"
+                type="text"
+                className="form-input"
+                placeholder="1.0"
+                value={depositAmount}
+                onChange={(e) => setDepositAmount(e.target.value)}
+                required
+              />
+              <span className="form-hint text-xs text-muted">
+                Calls wallet.addDeposit() which pays EntryPoint.depositTo for UserOp gas reimbursement
+              </span>
+            </div>
+
+            <div className="form-col-full">
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? "Depositing Gas..." : "Add EntryPoint Deposit"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* TAB 5: AGENT MANAGEMENT */}
+        {activeTab === "agent" && (
+          <div className="form-grid">
+            {policy?.isRevoked ? (
+              <div className="banner banner-danger form-col-full">
+                <span>AGENT IS CURRENTLY REVOKED (Agent = 0x0). All agent UserOps will fail.</span>
+              </div>
+            ) : (
+              <div className="banner banner-success form-col-full">
+                <span>Current Agent: {policy?.agent || CONTRACT_ADDRESSES.agent}</span>
+              </div>
+            )}
+
+            {/* Revoke Agent Section */}
+            <div className="agent-sub-card form-col-full">
+              <h3 className="text-sm font-semibold text-red">Revoke Agent Key</h3>
+              <p className="text-xs text-muted">
+                Immediately revokes the agent by setting agent address to zero. All subsequent agent UserOps
+                will be blocked immediately.
+              </p>
+
+              {confirmRevoke ? (
+                <div className="confirm-box" style={{ marginTop: 12 }}>
+                  <span className="text-xs text-red font-semibold">
+                    Are you sure you want to revoke the agent key immediately?
+                  </span>
+                  <div className="confirm-actions">
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={isSubmitting}
+                      onClick={handleRevokeAgent}
+                    >
+                      Confirm Revoke
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => setConfirmRevoke(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-danger btn-sm"
+                  style={{ marginTop: 12 }}
+                  disabled={isSubmitting || Boolean(policy?.isRevoked)}
+                  onClick={() => setConfirmRevoke(true)}
+                >
+                  Revoke Agent
+                </button>
+              )}
+            </div>
+
+            {/* Set / Restore Agent Section */}
+            <form onSubmit={handleSetAgent} className="agent-sub-card form-col-full" style={{ marginTop: 16 }}>
+              <h3 className="text-sm font-semibold">Set / Restore Agent Key</h3>
+              <p className="text-xs text-muted">
+                Assign an active agent key (e.g. Account #1 {CONTRACT_ADDRESSES.agent})
+              </p>
+              <div className="form-group" style={{ marginTop: 8 }}>
+                <input
+                  type="text"
+                  className="form-input font-mono"
+                  value={newAgentAddress}
+                  onChange={(e) => setNewAgentAddress(e.target.value.trim())}
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                className="btn btn-secondary btn-sm"
+                style={{ marginTop: 8 }}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? "Setting Agent..." : "Set Agent Address"}
+              </button>
+            </form>
           </div>
-          {txStatus.message && <div>{txStatus.message}</div>}
-          {txStatus.error && (
-            <div style={{ color: "#f87171", fontFamily: "JetBrains Mono" }}>
-              {txStatus.error}
+        )}
+
+        {/* Transaction Status Box */}
+        {txStatus.status !== "idle" && (
+          <div
+            className={`tx-status-box tx-status-${txStatus.status}`}
+            style={{ marginTop: 16 }}
+          >
+            <div className="tx-status-content">
+              {txStatus.status === "pending" && (
+                <span className="spinner"></span>
+              )}
+              {txStatus.status === "success" && <span className="icon">✓</span>}
+              {txStatus.status === "error" && <span className="icon">✕</span>}
+              <span className="tx-status-msg">
+                {txStatus.message || txStatus.error}
+              </span>
             </div>
-          )}
-          {txStatus.hash && (
-            <div className="feedback-hash mono">
-              <span>Tx Hash:</span>
-              <span>{txStatus.hash}</span>
-            </div>
-          )}
-        </div>
-      )}
+            {txStatus.hash && (
+              <span className="font-mono text-xs text-muted">
+                Tx: {txStatus.hash}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
     </section>
   );
 };

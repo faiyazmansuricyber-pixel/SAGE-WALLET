@@ -1,12 +1,16 @@
 import React, { useEffect, useState, useRef } from "react";
-import { formatEther } from "viem";
 import { publicClient } from "../client";
-import { CONTRACT_ADDRESSES, WALLET_ABI } from "../constants";
-import { DashboardEvent, EventType } from "../types";
+import { CONTRACT_ADDRESSES, WALLET_ABI, formatEth } from "../constants";
+import { DashboardEvent, EventType, EventFilter, AgentAttempt } from "../types";
 
-const getColorForEvent = (name: string): "green" | "blue" | "grey" | "red" => {
+interface EventFeedProps {
+  attempts?: AgentAttempt[];
+}
+
+const getColorForEvent = (name: string): "green" | "blue" | "amber" | "grey" | "red" => {
   switch (name) {
     case "Executed":
+    case "AgentExecuted":
       return "green";
     case "ApprovalSet":
     case "ApprovalUsed":
@@ -17,21 +21,23 @@ const getColorForEvent = (name: string): "green" | "blue" | "grey" | "red" => {
     case "RecipientSet":
     case "AgentSet":
     case "CallAllowedSet":
+      return "amber";
     default:
       return "grey";
   }
 };
 
-export const EventFeed: React.FC = () => {
-  const [events, setEvents] = useState<DashboardEvent[]>([]);
+export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
+  const [onchainEvents, setOnchainEvents] = useState<DashboardEvent[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<EventFilter>("All");
   const blockTimeCache = useRef<Map<string, number>>(new Map());
 
   // Helper to fetch block timestamp with caching
-  const getBlockTime = async (blockNumber: bigint): Promise<number | undefined> => {
+  const getBlockTime = async (blockNumber: bigint): Promise<number> => {
     const key = blockNumber.toString();
     if (blockTimeCache.current.has(key)) {
-      return blockTimeCache.current.get(key);
+      return blockTimeCache.current.get(key)!;
     }
     try {
       const block = await publicClient.getBlock({ blockNumber });
@@ -39,7 +45,8 @@ export const EventFeed: React.FC = () => {
       blockTimeCache.current.set(key, time);
       return time;
     } catch {
-      return undefined;
+      const cur = await publicClient.getBlock();
+      return Number(cur.timestamp);
     }
   };
 
@@ -47,12 +54,52 @@ export const EventFeed: React.FC = () => {
   const parseLog = async (log: any): Promise<DashboardEvent> => {
     const eventName = log.eventName as EventType;
     const color = getColorForEvent(eventName);
-    const isOwnerApproved =
-      eventName === "Executed" && Boolean(log.args?.approved);
 
     const blockTimestamp = log.blockNumber
       ? await getBlockTime(log.blockNumber)
-      : undefined;
+      : Number((await publicClient.getBlock()).timestamp);
+
+    let summary = `${eventName} emitted`;
+    if (eventName === "Executed" || eventName === "AgentExecuted") {
+      const targetRaw = String(log.args?.target || log.args?.[0] || "");
+      const shortTgt =
+        targetRaw && targetRaw.length >= 10
+          ? `${targetRaw.slice(0, 6)}...${targetRaw.slice(-4)}`
+          : targetRaw;
+      const approvedBadge = log.args?.approved ? " (owner-approved)" : "";
+      summary = `Agent executed ${formatEth(log.args?.value || 0n, 4)} ETH to ${shortTgt}${approvedBadge}`;
+    } else if (eventName === "ApprovalSet") {
+      summary = `Owner approved callHash ${String(log.args?.callHash || "").slice(0, 10)}...`;
+    } else if (eventName === "ApprovalUsed") {
+      summary = `Approved call executed by agent (callHash: ${String(log.args?.callHash || "").slice(
+        0,
+        10
+      )}...)`;
+    } else if (eventName === "AgentRevoked") {
+      const oldAgent = String(log.args?.agent || log.args?.[0] || "");
+      const shortAddr =
+        oldAgent && oldAgent.length >= 10
+          ? ` (${oldAgent.slice(0, 6)}...${oldAgent.slice(-4)})`
+          : "";
+      summary = `Agent key REVOKED by owner${shortAddr}`;
+    } else if (eventName === "AgentSet") {
+      const agentRaw = String(log.args?.agent || log.args?.[0] || "");
+      const shortAddr =
+        agentRaw && agentRaw.length >= 10
+          ? `${agentRaw.slice(0, 6)}...${agentRaw.slice(-4)}`
+          : agentRaw || "unknown";
+      summary = `New agent assigned: ${shortAddr}`;
+    } else if (eventName === "RecipientSet") {
+      const rec = String(log.args?.recipient || log.args?.[0] || "");
+      const shortRec =
+        rec && rec.length >= 10 ? `${rec.slice(0, 6)}...${rec.slice(-4)}` : rec;
+      summary = `Recipient ${shortRec} ${log.args?.allowed ? "allowed" : "disallowed"}`;
+    } else if (eventName === "PolicyUpdated") {
+      summary = `Policy updated: perTx ${formatEth(
+        log.args?.perTxLimit || 0n,
+        4
+      )} ETH, daily ${formatEth(log.args?.dailyLimit || 0n, 4)} ETH`;
+    }
 
     return {
       id: `${log.transactionHash}-${log.logIndex ?? 0}`,
@@ -62,14 +109,14 @@ export const EventFeed: React.FC = () => {
       blockTimestamp,
       args: log.args || {},
       color,
-      isOwnerApproved,
+      summary,
+      isOffchain: false,
     };
   };
 
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Fetch initial past logs from block 0
     const fetchHistoricalEvents = async () => {
       setIsLoading(true);
       try {
@@ -86,14 +133,13 @@ export const EventFeed: React.FC = () => {
         }
 
         if (isMounted) {
-          // Sort newest first
           parsedList.sort((a, b) => {
-            if (b.blockNumber !== a.blockNumber) {
+            if (b.blockNumber && a.blockNumber && b.blockNumber !== a.blockNumber) {
               return b.blockNumber > a.blockNumber ? 1 : -1;
             }
-            return 0;
+            return (b.blockTimestamp || 0) - (a.blockTimestamp || 0);
           });
-          setEvents(parsedList);
+          setOnchainEvents(parsedList);
         }
       } catch (err) {
         console.error("Failed to fetch past events:", err);
@@ -104,18 +150,14 @@ export const EventFeed: React.FC = () => {
 
     fetchHistoricalEvents();
 
-    // 2. Watch for live contract events via viem watchContractEvent
     const unwatch = publicClient.watchContractEvent({
       address: CONTRACT_ADDRESSES.wallet,
       abi: WALLET_ABI,
-      onLogs: async (newLogs) => {
-        for (const log of newLogs) {
+      onLogs: async (logs) => {
+        for (const log of logs) {
           const parsed = await parseLog(log);
           if (isMounted) {
-            setEvents((prev) => {
-              if (prev.some((e) => e.id === parsed.id)) return prev;
-              return [parsed, ...prev];
-            });
+            setOnchainEvents((prev) => [parsed, ...prev.filter((e) => e.id !== parsed.id)]);
           }
         }
       },
@@ -127,229 +169,158 @@ export const EventFeed: React.FC = () => {
     };
   }, []);
 
-  const formatTimestamp = (sec?: number) => {
-    if (!sec) return "Just now";
-    return new Date(sec * 1000).toLocaleTimeString(undefined, {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-  };
+  // Convert off-chain attempts into DashboardEvent representations
+  const offchainEvents: DashboardEvent[] = attempts.map((att) => {
+    const tgt = att.target.length >= 10 ? `${att.target.slice(0, 6)}...${att.target.slice(-4)}` : att.target;
+    return {
+      id: `attempt-${att.id}`,
+      eventName: "AgentAttemptOffchain",
+      txHash: att.txHash,
+      blockTimestamp: Math.floor(att.timestamp / 1000),
+      args: {
+        target: att.target,
+        value: att.value,
+        reason: att.reason,
+        status: att.status,
+        userOpHash: att.userOpHash,
+      },
+      color: att.status === "EXECUTED" ? "green" : "red",
+      summary:
+        att.status === "EXECUTED"
+          ? `Agent request executed: ${formatEth(att.value, 4)} ETH to ${tgt}`
+          : `Agent request BLOCKED: ${att.reason || "Reverted"} (${formatEth(att.value, 4)} ETH to ${tgt})`,
+      isOffchain: true,
+    };
+  });
+
+  // Merge on-chain and off-chain events chronologically
+  const mergedEvents = [...onchainEvents, ...offchainEvents].sort((a, b) => {
+    const timeA = a.blockTimestamp || 0;
+    const timeB = b.blockTimestamp || 0;
+    return timeB - timeA;
+  });
+
+  // Filter items
+  const filteredEvents = mergedEvents.filter((ev) => {
+    if (activeFilter === "All") return true;
+    if (activeFilter === "Executed") {
+      return (
+        ev.eventName === "Executed" ||
+        ev.eventName === "AgentExecuted" ||
+        (ev.isOffchain && ev.args?.status === "EXECUTED")
+      );
+    }
+    if (activeFilter === "Approvals") {
+      return ev.eventName === "ApprovalSet" || ev.eventName === "ApprovalUsed";
+    }
+    if (activeFilter === "Policy") {
+      return (
+        ev.eventName === "PolicyUpdated" ||
+        ev.eventName === "RecipientSet" ||
+        ev.eventName === "AgentSet" ||
+        ev.eventName === "AgentRevoked"
+      );
+    }
+    return true;
+  });
+
+  // Phase 2 check against ABI
+  const abiFunctionNames = new Set(
+    (WALLET_ABI as Array<{ name?: string }>).map((x) => x.name).filter(Boolean)
+  );
+  const phase2Features = [
+    { name: "Emergency Wallet Freeze", fn: "freeze" },
+    { name: "Guardian Social Recovery", fn: "guardians" },
+    { name: "Paymaster Gas Quota", fn: "sponsorQuota" },
+    { name: "Fuzz / invariant tests (not built yet)", fn: "proposeRecovery" },
+  ];
 
   return (
-    <section className="panel-card" aria-label="Live Event Feed">
-      <div className="panel-title-bar">
-        <div className="panel-title">
-          <svg
-            width="20"
-            height="20"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-          </svg>
-          Live Contract Event Feed
+    <section className="dashboard-card event-feed-panel" id="event-feed">
+      <div className="card-header">
+        <div>
+          <h2 className="card-title">Live Wallet &amp; Agent Feed</h2>
+          <p className="card-subtitle">
+            Unified chronological stream of on-chain contract events and off-chain agent validation attempts
+          </p>
         </div>
-        <div className="panel-badge">
-          {events.length} {events.length === 1 ? "Event" : "Events"} recorded
+        <div className="filter-chips">
+          {(["All", "Executed", "Approvals", "Policy"] as EventFilter[]).map((filter) => (
+            <button
+              type="button"
+              key={filter}
+              className={`chip ${activeFilter === filter ? "active" : ""}`}
+              onClick={() => setActiveFilter(filter)}
+            >
+              {filter}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="events-container">
-        {isLoading && (
-          <div className="empty-events">Scanning event history from Block 0...</div>
-        )}
+      <div className="event-list-wrapper">
+        {isLoading && mergedEvents.length === 0 ? (
+          <div className="loading-state">
+            <span className="spinner"></span> Syncing event logs...
+          </div>
+        ) : filteredEvents.length === 0 ? (
+          <div className="empty-state">No events matching this filter.</div>
+        ) : (
+          <div className="event-list">
+            {filteredEvents.map((ev) => (
+              <div key={ev.id} className={`event-item event-color-${ev.color}`}>
+                <div className="event-item-top">
+                  <div className="event-item-left">
+                    <span className={`badge badge-${ev.color}`}>
+                      {ev.isOffchain ? "AGENT OP" : ev.eventName}
+                    </span>
+                    {ev.isOffchain && (
+                      <span className="badge badge-grey badge-xs">
+                        agent request (off-chain)
+                      </span>
+                    )}
+                  </div>
+                  <span className="event-time text-xs text-muted font-mono">
+                    {ev.blockTimestamp
+                      ? new Date(ev.blockTimestamp * 1000).toLocaleTimeString()
+                      : "Pending"}
+                  </span>
+                </div>
 
-        {!isLoading && events.length === 0 && (
-          <div className="empty-events">
-            No events found yet. Execute an owner transaction or trigger an agent
-            action to view live logs.
+                <div className="event-summary text-sm font-semibold">{ev.summary}</div>
+
+                <div className="event-meta text-xs text-muted font-mono">
+                  {ev.txHash && <span>tx: {ev.txHash.slice(0, 10)}...{ev.txHash.slice(-4)}</span>}
+                  {ev.blockNumber ? <span>block: #{ev.blockNumber.toString()}</span> : null}
+                  {ev.args?.userOpHash && (
+                    <span>opHash: {String(ev.args.userOpHash).slice(0, 8)}...</span>
+                  )}
+                </div>
+              </div>
+            ))}
           </div>
         )}
+      </div>
 
-        {events.map((ev) => (
-          <div key={ev.id} className={`event-card ${ev.color}`}>
-            <div className="event-card-header">
-              <div className={`event-name-tag ${ev.color}`}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: "50%",
-                    background: "currentColor",
-                  }}
-                />
-                {ev.eventName}
-                {ev.isOwnerApproved && (
-                  <span className="approved-badge">Owner-Approved</span>
-                )}
-              </div>
-
-              <div className="event-meta mono">
-                <span>{formatTimestamp(ev.blockTimestamp)}</span>
-                <span>Block #{ev.blockNumber.toString()}</span>
-              </div>
-            </div>
-
-            {/* Event Specific Parameters */}
-            <div className="event-details mono">
-              {/* Executed Event Details */}
-              {ev.eventName === "Executed" && (
-                <>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Target Recipient</span>
-                    <span className="detail-value">
-                      {ev.args.target
-                        ? `${ev.args.target.slice(0, 8)}...${ev.args.target.slice(-6)}`
-                        : "N/A"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Value</span>
-                    <span className="detail-value" style={{ color: "#34d399" }}>
-                      {ev.args.value !== undefined
-                        ? `${formatEther(BigInt(ev.args.value))} ETH`
-                        : "0 ETH"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Selector</span>
-                    <span className="detail-value">
-                      {ev.args.selector || "0x00000000"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Approved</span>
-                    <span className="detail-value">
-                      {ev.args.approved ? "True" : "False"}
-                    </span>
-                  </div>
-                </>
-              )}
-
-              {/* PolicyUpdated Event Details */}
-              {ev.eventName === "PolicyUpdated" && (
-                <>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Per-Tx Limit</span>
-                    <span className="detail-value">
-                      {ev.args.perTxLimit !== undefined
-                        ? `${formatEther(BigInt(ev.args.perTxLimit))} ETH`
-                        : "N/A"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Daily Limit</span>
-                    <span className="detail-value">
-                      {ev.args.dailyLimit !== undefined
-                        ? `${formatEther(BigInt(ev.args.dailyLimit))} ETH`
-                        : "N/A"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Valid Until</span>
-                    <span className="detail-value">
-                      {ev.args.validUntil
-                        ? new Date(Number(ev.args.validUntil) * 1000).toLocaleString()
-                        : "N/A"}
-                    </span>
-                  </div>
-                </>
-              )}
-
-              {/* ApprovalSet Event Details */}
-              {ev.eventName === "ApprovalSet" && (
-                <>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Call Hash</span>
-                    <span className="detail-value">
-                      {ev.args.callHash
-                        ? `${ev.args.callHash.slice(0, 10)}...${ev.args.callHash.slice(-8)}`
-                        : "N/A"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Expiry</span>
-                    <span className="detail-value">
-                      {ev.args.expiry
-                        ? new Date(Number(ev.args.expiry) * 1000).toLocaleTimeString()
-                        : "N/A"}
-                    </span>
-                  </div>
-                </>
-              )}
-
-              {/* ApprovalUsed Event Details */}
-              {ev.eventName === "ApprovalUsed" && (
-                <div className="event-detail-item">
-                  <span className="detail-label">Used Call Hash</span>
-                  <span className="detail-value">
-                    {ev.args.callHash
-                      ? `${ev.args.callHash.slice(0, 14)}...${ev.args.callHash.slice(-10)}`
-                      : "N/A"}
-                  </span>
-                </div>
-              )}
-
-              {/* RecipientSet Event Details */}
-              {ev.eventName === "RecipientSet" && (
-                <>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Recipient</span>
-                    <span className="detail-value">
-                      {ev.args.recipient
-                        ? `${ev.args.recipient.slice(0, 10)}...${ev.args.recipient.slice(-8)}`
-                        : "N/A"}
-                    </span>
-                  </div>
-                  <div className="event-detail-item">
-                    <span className="detail-label">Allowed</span>
-                    <span
-                      className="detail-value"
-                      style={{
-                        color: ev.args.allowed ? "#34d399" : "#f87171",
-                      }}
-                    >
-                      {ev.args.allowed ? "TRUE (Allowlisted)" : "FALSE (Blocked)"}
-                    </span>
-                  </div>
-                </>
-              )}
-
-              {/* AgentSet Event Details */}
-              {ev.eventName === "AgentSet" && (
-                <div className="event-detail-item">
-                  <span className="detail-label">New Agent</span>
-                  <span className="detail-value">
-                    {ev.args.agent
-                      ? `${ev.args.agent.slice(0, 10)}...${ev.args.agent.slice(-8)}`
-                      : "N/A"}
-                  </span>
-                </div>
-              )}
-
-              {/* AgentRevoked Event Details */}
-              {ev.eventName === "AgentRevoked" && (
-                <div className="event-detail-item">
-                  <span className="detail-label">Revoked Agent Address</span>
-                  <span className="detail-value" style={{ color: "#f87171" }}>
-                    {ev.args.agent || "Agent Key Revoked"}
-                  </span>
-                </div>
-              )}
-
-              {/* Tx Hash Link */}
-              <div className="event-detail-item">
-                <span className="detail-label">Transaction Hash</span>
-                <span className="detail-value" style={{ opacity: 0.8 }}>
-                  {ev.txHash ? `${ev.txHash.slice(0, 8)}...${ev.txHash.slice(-6)}` : ""}
+      {/* STAGE 5: Coming Next Section (ABI Introspection) */}
+      <div className="coming-next-section">
+        <h3 className="section-subtitle">Coming Next (Phase 2 Architecture)</h3>
+        <p className="text-xs text-muted" style={{ marginBottom: 12 }}>
+          Introspected on-chain capability check against SentinelWallet ABI:
+        </p>
+        <div className="coming-next-grid">
+          {phase2Features.map((feat) => {
+            const isDeployed = abiFunctionNames.has(feat.fn);
+            return (
+              <div key={feat.name} className="coming-next-card">
+                <span className="text-sm font-semibold">{feat.name}</span>
+                <span className={`badge badge-xs ${isDeployed ? "badge-green" : "badge-grey"}`}>
+                  {isDeployed ? "Active on contract" : "Not deployed on the contract yet"}
                 </span>
               </div>
-            </div>
-          </div>
-        ))}
+            );
+          })}
+        </div>
       </div>
     </section>
   );

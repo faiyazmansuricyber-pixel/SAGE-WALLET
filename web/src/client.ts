@@ -9,6 +9,7 @@ import {
   ANVIL_RPC_URL,
   ANVIL_CHAIN_ID,
   DEMO_ONLY_OWNER_PRIVATE_KEY,
+  DEMO_ONLY_AGENT_PRIVATE_KEY,
 } from "./constants";
 
 export const anvilChain = defineChain({
@@ -27,6 +28,8 @@ export const anvilChain = defineChain({
 });
 
 export const ownerAccount = privateKeyToAccount(DEMO_ONLY_OWNER_PRIVATE_KEY);
+export const bundlerAccount = ownerAccount; // Bundler is account #0
+export const agentAccount = privateKeyToAccount(DEMO_ONLY_AGENT_PRIVATE_KEY); // Agent is account #1
 
 export const publicClient = createPublicClient({
   chain: anvilChain,
@@ -35,6 +38,12 @@ export const publicClient = createPublicClient({
 
 export const walletClient = createWalletClient({
   account: ownerAccount,
+  chain: anvilChain,
+  transport: http(ANVIL_RPC_URL),
+});
+
+export const bundlerClient = createWalletClient({
+  account: bundlerAccount,
   chain: anvilChain,
   transport: http(ANVIL_RPC_URL),
 });
