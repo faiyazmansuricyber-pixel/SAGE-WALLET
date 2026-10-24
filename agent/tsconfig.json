@@ -6,10 +6,15 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "baseUrl": ".",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "..",
     "resolveJsonModule": true,
-    "declaration": true
+    "declaration": true,
+    "paths": {
+      "viem": ["node_modules/viem"],
+      "viem/*": ["node_modules/viem/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

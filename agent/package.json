@@ -6,13 +6,15 @@
   "scripts": {
     "build": "tsc",
     "start": "tsx src/index.ts",
-    "attack": "tsx src/attacks/runner.ts"
+    "attack": "tsx src/attacks/runner.ts",
+    "test": "tsx --test src/attacks/config.test.ts"
   },
   "dependencies": {
     "viem": "^2.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.0.0",
-    "tsx": "^4.0.0"
+    "@types/node": "^24.19.2",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
   }
 }

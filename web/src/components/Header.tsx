@@ -19,8 +19,8 @@ export const Header: React.FC<HeaderProps> = ({
       <div className="header-brand">
         <div className="brand-icon">
           <svg
-            width="24"
-            height="24"
+            width="22"
+            height="22"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -39,17 +39,23 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       <div className="header-meta">
-        <div className={`network-badge ${isAnvilConnected ? "" : "offline"}`}>
+        <div
+          className={`network-badge ${isAnvilConnected ? "" : "offline"}`}
+          title={isAnvilConnected ? "Anvil local node is reachable" : "Cannot reach Anvil at 127.0.0.1:8545"}
+        >
           <span className={`pulse-dot ${isAnvilConnected ? "" : "offline"}`} />
-          {isAnvilConnected ? "Anvil Connected (31337)" : "Anvil Offline"}
+          {isAnvilConnected ? "Anvil connected" : "Anvil offline"}
           {blockNumber !== null && (
-            <span style={{ opacity: 0.75, marginLeft: 4 }}>
-              # {blockNumber.toString()}
+            <span style={{ opacity: 0.75, marginLeft: 2 }}>
+              #{blockNumber.toString()}
             </span>
           )}
         </div>
 
-        <div className="demo-account-pill mono" title="Anvil Demo Account #0 (Owner)">
+        <div
+          className="demo-account-pill"
+          title={`Anvil Demo Account #0 (Owner): ${CONTRACT_ADDRESSES.owner}`}
+        >
           Owner: {CONTRACT_ADDRESSES.owner.slice(0, 6)}...
           {CONTRACT_ADDRESSES.owner.slice(-4)}
         </div>
@@ -58,18 +64,17 @@ export const Header: React.FC<HeaderProps> = ({
           onClick={onRefresh}
           className="quick-btn"
           disabled={isRefreshing}
-          style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 6 }}
           title="Force refresh live contract state"
         >
           <svg
-            width="14"
-            height="14"
+            width="13"
+            height="13"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
-            strokeWidth="2"
+            strokeWidth="2.5"
             style={{
-              animation: isRefreshing ? "spin 1s linear infinite" : "none",
+              animation: isRefreshing ? "spin 0.7s linear infinite" : "none",
             }}
           >
             <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />

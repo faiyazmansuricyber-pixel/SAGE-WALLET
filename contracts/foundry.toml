@@ -18,3 +18,20 @@ fs_permissions = [{ access = "read-write", path = ".." }]
 
 [profile.default.fmt]
 line_length = 120
+<<<<<<< HEAD
+=======
+
+# Remappings — added after `forge install foundry-rs/forge-std`
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+]
+
+# Invariant fuzzing settings
+[profile.default.invariant]
+runs = 256
+depth = 15
+fail_on_revert = false
+
+[profile.default.fuzz]
+runs = 512
+>>>>>>> 208cfa56c0595574b5269c3b0c062c06ab6c4bdb

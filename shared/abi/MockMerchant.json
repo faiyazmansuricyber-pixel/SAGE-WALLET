@@ -1,0 +1,40 @@
+[
+  {
+    "type": "function",
+    "name": "buyCredits",
+    "inputs": [{ "name": "units", "type": "uint256", "internalType": "uint256" }],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "getCredits",
+    "inputs": [{ "name": "buyer", "type": "address", "internalType": "address" }],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "PRICE_PER_UNIT",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "credits",
+    "inputs": [{ "name": "", "type": "address", "internalType": "address" }],
+    "outputs": [{ "name": "", "type": "uint256", "internalType": "uint256" }],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "CreditsPurchased",
+    "inputs": [
+      { "name": "buyer",  "type": "address", "indexed": true,  "internalType": "address" },
+      { "name": "units",  "type": "uint256", "indexed": false, "internalType": "uint256" },
+      { "name": "paid",   "type": "uint256", "indexed": false, "internalType": "uint256" }
+    ],
+    "anonymous": false
+  }
+]

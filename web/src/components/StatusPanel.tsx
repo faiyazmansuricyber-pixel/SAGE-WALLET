@@ -7,6 +7,10 @@ interface StatusPanelProps {
   isLoading: boolean;
 }
 
+const SkeletonValue = () => (
+  <span className="skeleton" style={{ width: "90px", height: "2.2rem", display: "inline-block" }} />
+);
+
 export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) => {
   const [copied, setCopied] = React.useState<string | null>(null);
 
@@ -26,29 +30,27 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
       policy.agent.toLowerCase() === ZERO_ADDRESS.toLowerCase() ||
       policy.agent === "0x0");
 
+  const showSkeletons = isLoading && !policy;
+
   const ethBalanceFormatted = !isOfflineOrUndeployed && policy
-    ? formatEth(policy.ethBalance, 4)
-    : "-";
+    ? formatEth(policy.ethBalance, 4) : "-";
   const perTxFormatted = !isOfflineOrUndeployed && policy ? formatEth(policy.perTxLimit, 4) : "-";
   const dailyLimitFormatted = !isOfflineOrUndeployed && policy ? formatEth(policy.dailyLimit, 4) : "-";
   const spentTodayFormatted = !isOfflineOrUndeployed && policy ? formatEth(policy.spentToday, 4) : "-";
   const depositFormatted = !isOfflineOrUndeployed && policy ? formatEth(policy.entryPointDeposit, 4) : "-";
 
-  // Spent today percentage calculation
   let progressPercent = 0;
   if (!isOfflineOrUndeployed && policy && policy.dailyLimit > 0n) {
     const rawPct = Number((policy.spentToday * 10000n) / policy.dailyLimit) / 100;
     progressPercent = Math.min(100, Math.max(0, rawPct));
   }
 
-  // Progress bar class: amber above 70%, red at 100%
   const getProgressBarClass = (): string => {
-    if (progressPercent >= 100) return "fill-red";
-    if (progressPercent >= 70) return "fill-amber";
+    if (progressPercent >= 90) return "fill-red";
+    if (progressPercent >= 66) return "fill-amber";
     return "fill-green";
   };
 
-  // Format validUntil
   let validUntilDisplay = "-";
   let isExpired = false;
   if (!isOfflineOrUndeployed && policy) {
@@ -62,7 +64,6 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
         hour: "2-digit",
         minute: "2-digit",
       });
-
       if (policy.validUntil < nowSec) {
         isExpired = true;
         validUntilDisplay += " (Expired)";
@@ -81,7 +82,7 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
 
   return (
     <section className="dashboard-card status-panel-card" aria-label="Wallet Status Panel">
-      {/* Banner for Connection or Deploy Issue */}
+      {/* Banners — keep shown even during reload per spec */}
       {isAnvilOffline && (
         <div className="banner banner-danger" id="anvil-offline-banner">
           <span className="banner-icon">⚠️</span>
@@ -96,7 +97,6 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
         </div>
       )}
 
-      {/* Gas deposit warning if deposit is 0 */}
       {!isOfflineOrUndeployed && policy && policy.entryPointDeposit === 0n && (
         <div className="banner banner-warning" id="zero-deposit-banner">
           <span className="banner-icon">⚠️</span>
@@ -112,54 +112,74 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
           </span>
         </div>
         <div className="header-badges">
-          <span className="badge badge-purple font-mono text-xs">
-            {isLoading ? "Syncing..." : "Live: 2s auto-refresh"}
+          <span className="badge badge-purple text-xs">
+            {isLoading ? (
+              <><span className="spinner" style={{ width: 10, height: 10, borderWidth: 1.5 }} /> Syncing…</>
+            ) : "Live: 2s auto-refresh"}
           </span>
         </div>
       </div>
 
       {/* Primary Key Stats Grid */}
       <div className="stats-grid">
-        {/* Wallet Address & Balance */}
+        {/* Wallet Balance */}
         <div className="stat-card">
           <div className="stat-label">Wallet Balance</div>
           <div className="stat-value font-mono">
-            {ethBalanceFormatted} {ethBalanceFormatted !== "-" && <span className="stat-unit">ETH</span>}
+            {showSkeletons ? <SkeletonValue /> : (
+              <>
+                {ethBalanceFormatted}
+                {ethBalanceFormatted !== "-" && (
+                  <span className="stat-unit">ETH</span>
+                )}
+              </>
+            )}
           </div>
           <div className="stat-subtext">
-            <span className="address-chip font-mono">
+            <span
+              className="address-chip font-mono"
+              title={CONTRACT_ADDRESSES.wallet}
+            >
               {CONTRACT_ADDRESSES.wallet.slice(0, 8)}...{CONTRACT_ADDRESSES.wallet.slice(-6)}
               <button
                 type="button"
                 className="copy-btn"
                 onClick={() => handleCopy(CONTRACT_ADDRESSES.wallet, "wallet")}
-                title="Copy address"
+                title="Copy wallet address"
               >
-                {copied === "wallet" ? "✓" : "📋"}
+                {copied === "wallet" ? "✓" : "⎘"}
               </button>
             </span>
           </div>
         </div>
 
-        {/* Agent Key Status */}
+        {/* Agent Status */}
         <div className="stat-card">
-          <div className="stat-label">Agent Status</div>
-          <div className="stat-value">
-            {isOfflineOrUndeployed ? (
-              "-"
-            ) : isRevoked ? (
-              <span className="badge badge-red">REVOKED</span>
-            ) : (
-              <span className="badge badge-green">ACTIVE KEY</span>
+          <div className="stat-label" title="The delegated key that may send UserOps on your behalf">
+            Agent Status
+          </div>
+          <div className="stat-value" style={{ fontSize: "1.1rem", paddingTop: 4 }}>
+            {showSkeletons ? <SkeletonValue /> : (
+              isOfflineOrUndeployed ? (
+                <span className="text-muted">—</span>
+              ) : isRevoked ? (
+                <span className="badge badge-red badge-lg">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  Revoked
+                </span>
+              ) : (
+                <span className="badge badge-green badge-lg">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 6 9 17l-5-5"/></svg>
+                  Active Key
+                </span>
+              )
             )}
           </div>
           <div className="stat-subtext font-mono">
-            {isOfflineOrUndeployed ? (
-              "-"
-            ) : isRevoked ? (
+            {isOfflineOrUndeployed ? "—" : isRevoked ? (
               <span className="text-red text-xs">Zero address (Revoked)</span>
             ) : (
-              <span className="address-chip font-mono">
+              <span className="address-chip font-mono" title={policy?.agent}>
                 {policy?.agent.slice(0, 8)}...{policy?.agent.slice(-6)}
                 <button
                   type="button"
@@ -167,7 +187,7 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
                   onClick={() => policy && handleCopy(policy.agent, "agent")}
                   title="Copy agent address"
                 >
-                  {copied === "agent" ? "✓" : "📋"}
+                  {copied === "agent" ? "✓" : "⎘"}
                 </button>
               </span>
             )}
@@ -176,56 +196,82 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
 
         {/* Per-Tx Limit */}
         <div className="stat-card">
-          <div className="stat-label">Per-Tx Limit</div>
+          <div
+            className="stat-label"
+            title="Maximum ETH the agent may spend in a single UserOperation"
+          >
+            Per-Tx Limit
+          </div>
           <div className="stat-value font-mono">
-            {perTxFormatted} {perTxFormatted !== "-" && <span className="stat-unit">ETH</span>}
+            {showSkeletons ? <SkeletonValue /> : (
+              <>
+                {perTxFormatted}
+                {perTxFormatted !== "-" && <span className="stat-unit">ETH</span>}
+              </>
+            )}
           </div>
           <div className="stat-subtext">Max spend per agent UserOp</div>
         </div>
 
         {/* EntryPoint Deposit */}
         <div className="stat-card">
-          <div className="stat-label">EntryPoint Deposit</div>
+          <div
+            className="stat-label"
+            title="Gas prefund held in EntryPoint. Agent requests pay fees from this."
+          >
+            EntryPoint Deposit
+          </div>
           <div className="stat-value font-mono">
-            {depositFormatted} {depositFormatted !== "-" && <span className="stat-unit">ETH</span>}
+            {showSkeletons ? <SkeletonValue /> : (
+              <>
+                {depositFormatted}
+                {depositFormatted !== "-" && <span className="stat-unit">ETH</span>}
+              </>
+            )}
           </div>
           <div className="stat-subtext">Gas prefund for UserOps</div>
         </div>
 
         {/* Policy Expiry */}
         <div className="stat-card stat-card-wide">
-          <div className="stat-label">Policy Expiry</div>
-          <div className={`stat-value font-mono text-sm ${isExpired ? "text-red" : ""}`}>
-            {validUntilDisplay}
+          <div className="stat-label" title="UTC-based timestamp after which the agent key is inactive">
+            Policy Expiry
+          </div>
+          <div className={`stat-value font-mono text-sm ${isExpired ? "text-red" : ""}`}
+            style={{ fontSize: "1rem", lineHeight: 1.5 }}>
+            {showSkeletons ? <SkeletonValue /> : validUntilDisplay}
           </div>
           <div className="stat-subtext">
-            {policy && policy.validUntil > 0 ? `Unix: ${policy.validUntil}` : "No expiry timestamp"}
+            {policy && policy.validUntil > 0
+              ? `Unix: ${policy.validUntil}`
+              : "No expiry timestamp"}
           </div>
         </div>
       </div>
 
-      {/* Spent Today Progress Card */}
+      {/* Daily Budget Progress Bar */}
       <div className="progress-section">
         <div className="progress-header">
           <div>
-            <span className="text-sm font-semibold">Daily Spending Limit Budget</span>
-            <span className="text-xs text-muted block">
-              Resets every UTC midnight {policy?.dayNumber ? `(UTC Day #${policy.dayNumber})` : ""}
+            <span className="text-sm font-semibold">Daily Spending Budget</span>
+            <span className="text-xs text-muted block" title="Resets at UTC midnight each day">
+              Resets every UTC midnight
+              {policy?.dayNumber ? ` (UTC Day #${policy.dayNumber})` : ""}
             </span>
           </div>
-          <div className="progress-numbers font-mono text-sm">
+          <div className="progress-numbers">
             {spentTodayFormatted} / {dailyLimitFormatted} ETH
             {dailyLimitFormatted !== "-" && (
               <span
                 style={{
-                  fontSize: "0.85rem",
-                  color:
-                    progressPercent >= 100
-                      ? "#ef4444"
-                      : progressPercent >= 70
-                      ? "#f59e0b"
-                      : "var(--text-secondary)",
                   marginLeft: 8,
+                  color:
+                    progressPercent >= 90
+                      ? "var(--danger-text)"
+                      : progressPercent >= 66
+                      ? "var(--amber-text)"
+                      : "var(--text-muted)",
+                  fontWeight: 600,
                 }}
               >
                 ({progressPercent.toFixed(1)}%)
@@ -234,16 +280,23 @@ export const StatusPanel: React.FC<StatusPanelProps> = ({ policy, isLoading }) =
           </div>
         </div>
 
-        <div className="progress-bar-bg" role="progressbar" aria-valuenow={progressPercent} aria-valuemin={0} aria-valuemax={100}>
+        <div
+          className="progress-bar-bg"
+          role="progressbar"
+          aria-valuenow={progressPercent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          title={`${progressPercent.toFixed(1)}% of daily limit used`}
+        >
           <div
             className={`progress-bar-fill ${getProgressBarClass()}`}
             style={{ width: `${progressPercent}%` }}
           />
         </div>
 
-        <div className="progress-footer text-xs text-muted">
+        <div className="progress-footer">
           <span>0 ETH</span>
-          <span>Daily Cap: {dailyLimitFormatted} ETH</span>
+          <span>spent / cap — Daily Cap: {dailyLimitFormatted} ETH</span>
         </div>
       </div>
     </section>

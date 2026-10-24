@@ -33,12 +33,17 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
   const [activeFilter, setActiveFilter] = useState<EventFilter>("All");
   const blockTimeCache = useRef<Map<string, number>>(new Map());
 
-  // Helper to fetch block timestamp with caching
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1500);
+  };
+
   const getBlockTime = async (blockNumber: bigint): Promise<number> => {
     const key = blockNumber.toString();
-    if (blockTimeCache.current.has(key)) {
-      return blockTimeCache.current.get(key)!;
-    }
+    if (blockTimeCache.current.has(key)) return blockTimeCache.current.get(key)!;
     try {
       const block = await publicClient.getBlock({ blockNumber });
       const time = Number(block.timestamp);
@@ -50,7 +55,6 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
     }
   };
 
-  // Convert viem log to DashboardEvent
   const parseLog = async (log: any): Promise<DashboardEvent> => {
     const eventName = log.eventName as EventType;
     const color = getColorForEvent(eventName);
@@ -62,43 +66,32 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
     let summary = `${eventName} emitted`;
     if (eventName === "Executed" || eventName === "AgentExecuted") {
       const targetRaw = String(log.args?.target || log.args?.[0] || "");
-      const shortTgt =
-        targetRaw && targetRaw.length >= 10
-          ? `${targetRaw.slice(0, 6)}...${targetRaw.slice(-4)}`
-          : targetRaw;
+      const shortTgt = targetRaw && targetRaw.length >= 10
+        ? `${targetRaw.slice(0, 6)}...${targetRaw.slice(-4)}`
+        : targetRaw;
       const approvedBadge = log.args?.approved ? " (owner-approved)" : "";
       summary = `Agent executed ${formatEth(log.args?.value || 0n, 4)} ETH to ${shortTgt}${approvedBadge}`;
     } else if (eventName === "ApprovalSet") {
       summary = `Owner approved callHash ${String(log.args?.callHash || "").slice(0, 10)}...`;
     } else if (eventName === "ApprovalUsed") {
-      summary = `Approved call executed by agent (callHash: ${String(log.args?.callHash || "").slice(
-        0,
-        10
-      )}...)`;
+      summary = `Approved call executed by agent (callHash: ${String(log.args?.callHash || "").slice(0, 10)}...)`;
     } else if (eventName === "AgentRevoked") {
       const oldAgent = String(log.args?.agent || log.args?.[0] || "");
-      const shortAddr =
-        oldAgent && oldAgent.length >= 10
-          ? ` (${oldAgent.slice(0, 6)}...${oldAgent.slice(-4)})`
-          : "";
+      const shortAddr = oldAgent && oldAgent.length >= 10
+        ? ` (${oldAgent.slice(0, 6)}...${oldAgent.slice(-4)})` : "";
       summary = `Agent key REVOKED by owner${shortAddr}`;
     } else if (eventName === "AgentSet") {
       const agentRaw = String(log.args?.agent || log.args?.[0] || "");
-      const shortAddr =
-        agentRaw && agentRaw.length >= 10
-          ? `${agentRaw.slice(0, 6)}...${agentRaw.slice(-4)}`
-          : agentRaw || "unknown";
+      const shortAddr = agentRaw && agentRaw.length >= 10
+        ? `${agentRaw.slice(0, 6)}...${agentRaw.slice(-4)}`
+        : agentRaw || "unknown";
       summary = `New agent assigned: ${shortAddr}`;
     } else if (eventName === "RecipientSet") {
       const rec = String(log.args?.recipient || log.args?.[0] || "");
-      const shortRec =
-        rec && rec.length >= 10 ? `${rec.slice(0, 6)}...${rec.slice(-4)}` : rec;
+      const shortRec = rec && rec.length >= 10 ? `${rec.slice(0, 6)}...${rec.slice(-4)}` : rec;
       summary = `Recipient ${shortRec} ${log.args?.allowed ? "allowed" : "disallowed"}`;
     } else if (eventName === "PolicyUpdated") {
-      summary = `Policy updated: perTx ${formatEth(
-        log.args?.perTxLimit || 0n,
-        4
-      )} ETH, daily ${formatEth(log.args?.dailyLimit || 0n, 4)} ETH`;
+      summary = `Policy updated: perTx ${formatEth(log.args?.perTxLimit || 0n, 4)} ETH, daily ${formatEth(log.args?.dailyLimit || 0n, 4)} ETH`;
     }
 
     return {
@@ -224,7 +217,17 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
     return true;
   });
 
-  // Phase 2 check against ABI
+  // Count per filter for chip counts
+  const countFor = (filter: EventFilter): number => {
+    if (filter === "All") return mergedEvents.length;
+    return mergedEvents.filter((ev) => {
+      if (filter === "Executed") return ev.eventName === "Executed" || ev.eventName === "AgentExecuted" || (ev.isOffchain && ev.args?.status === "EXECUTED");
+      if (filter === "Approvals") return ev.eventName === "ApprovalSet" || ev.eventName === "ApprovalUsed";
+      if (filter === "Policy") return ev.eventName === "PolicyUpdated" || ev.eventName === "RecipientSet" || ev.eventName === "AgentSet" || ev.eventName === "AgentRevoked";
+      return true;
+    }).length;
+  };
+
   const abiFunctionNames = new Set(
     (WALLET_ABI as Array<{ name?: string }>).map((x) => x.name).filter(Boolean)
   );
@@ -253,6 +256,16 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
               onClick={() => setActiveFilter(filter)}
             >
               {filter}
+              {!isLoading && (
+                <span style={{
+                  marginLeft: 4,
+                  fontSize: "0.7rem",
+                  opacity: 0.75,
+                  fontWeight: 700,
+                }}>
+                  {countFor(filter)}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -261,7 +274,7 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
       <div className="event-list-wrapper">
         {isLoading && mergedEvents.length === 0 ? (
           <div className="loading-state">
-            <span className="spinner"></span> Syncing event logs...
+            <span className="spinner" /> Syncing event logs…
           </div>
         ) : filteredEvents.length === 0 ? (
           <div className="empty-state">No events matching this filter.</div>
@@ -276,7 +289,7 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
                     </span>
                     {ev.isOffchain && (
                       <span className="badge badge-grey badge-xs">
-                        agent request (off-chain)
+                        off-chain
                       </span>
                     )}
                   </div>
@@ -290,10 +303,32 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
                 <div className="event-summary text-sm font-semibold">{ev.summary}</div>
 
                 <div className="event-meta text-xs text-muted font-mono">
-                  {ev.txHash && <span>tx: {ev.txHash.slice(0, 10)}...{ev.txHash.slice(-4)}</span>}
+                  {ev.txHash && (
+                    <span>
+                      tx: {ev.txHash.slice(0, 10)}...{ev.txHash.slice(-4)}
+                      <button
+                        className="copy-btn"
+                        style={{ marginLeft: 4 }}
+                        onClick={() => ev.txHash && handleCopy(ev.txHash, `tx-${ev.id}`)}
+                        title="Copy tx hash"
+                      >
+                        {copiedId === `tx-${ev.id}` ? "✓" : "⎘"}
+                      </button>
+                    </span>
+                  )}
                   {ev.blockNumber ? <span>block: #{ev.blockNumber.toString()}</span> : null}
                   {ev.args?.userOpHash && (
-                    <span>opHash: {String(ev.args.userOpHash).slice(0, 8)}...</span>
+                    <span>
+                      opHash: {String(ev.args.userOpHash).slice(0, 8)}...
+                      <button
+                        className="copy-btn"
+                        style={{ marginLeft: 4 }}
+                        onClick={() => handleCopy(String(ev.args.userOpHash), `op-${ev.id}`)}
+                        title="Copy userOp hash"
+                      >
+                        {copiedId === `op-${ev.id}` ? "✓" : "⎘"}
+                      </button>
+                    </span>
                   )}
                 </div>
               </div>
@@ -302,7 +337,7 @@ export const EventFeed: React.FC<EventFeedProps> = ({ attempts = [] }) => {
         )}
       </div>
 
-      {/* STAGE 5: Coming Next Section (ABI Introspection) */}
+      {/* STAGE 5: Coming Next Section */}
       <div className="coming-next-section">
         <h3 className="section-subtitle">Coming Next (Phase 2 Architecture)</h3>
         <p className="text-xs text-muted" style={{ marginBottom: 12 }}>

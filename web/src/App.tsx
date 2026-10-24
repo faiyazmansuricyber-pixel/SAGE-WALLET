@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Header } from "./components/Header";
+import { StickyNav } from "./components/StickyNav";
 import { StatusPanel } from "./components/StatusPanel";
 import { AgentSimulator } from "./components/AgentSimulator";
 import { ActionForms } from "./components/ActionForms";
@@ -12,7 +13,6 @@ import {
   WALLET_ABI,
   ENTRY_POINT_ABI,
   ZERO_ADDRESS,
-  ANVIL_RPC_URL,
 } from "./constants";
 import { WalletPolicy, Toast, AgentAttempt } from "./types";
 
@@ -196,11 +196,11 @@ export function App() {
   }, [fetchContractState]);
 
   return (
-    <div className="app-container">
+    <>
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Header bar */}
+      {/* Sticky top bar */}
       <Header
         isAnvilConnected={isAnvilConnected}
         blockNumber={blockNumber}
@@ -208,39 +208,53 @@ export function App() {
         isRefreshing={isRefreshing}
       />
 
-      <main className="main-content">
-        {/* 1. Status Panel */}
-        <StatusPanel policy={policy} isLoading={isLoading} />
+      {/* Sticky in-page nav */}
+      <StickyNav />
 
-        {/* 2. Agent Simulator */}
-        <AgentSimulator
-          attempts={attempts}
-          onNewAttempt={handleNewAttempt}
-          onRefreshPolicy={() => fetchContractState(true)}
-          addToast={addToast}
-        />
+      {/* Page wrapper */}
+      <div className="app-container">
+        <main className="main-content">
+          {/* 1. Status Panel */}
+          <section id="section-status">
+            <StatusPanel policy={policy} isLoading={isLoading} />
+          </section>
 
-        {/* 3. Owner Controls */}
-        <ActionForms
-          policy={policy}
-          onActionComplete={() => fetchContractState(true)}
-          addToast={addToast}
-        />
+          {/* 2. Agent Simulator */}
+          <section id="section-agent">
+            <AgentSimulator
+              attempts={attempts}
+              onNewAttempt={handleNewAttempt}
+              onRefreshPolicy={() => fetchContractState(true)}
+              addToast={addToast}
+            />
+          </section>
 
-        {/* 4. Attack Lab */}
-        <AttackLab
-          dailyLimit={policy?.dailyLimit || 0n}
-          spentToday={policy?.spentToday || 0n}
-          onRefreshPolicy={() => fetchContractState(true)}
-          onNewAttempt={handleNewAttempt}
-          addToast={addToast}
-        />
+          {/* 3. Owner Controls */}
+          <section id="section-owner">
+            <ActionForms
+              policy={policy}
+              onActionComplete={() => fetchContractState(true)}
+              addToast={addToast}
+            />
+          </section>
 
-        {/* 5. Event Feed */}
-        <EventFeed attempts={attempts} />
-      </main>
-    </div>
+          {/* 4. Attack Lab */}
+          <section id="section-attack">
+            <AttackLab
+              dailyLimit={policy?.dailyLimit || 0n}
+              spentToday={policy?.spentToday || 0n}
+              onRefreshPolicy={() => fetchContractState(true)}
+              onNewAttempt={handleNewAttempt}
+              addToast={addToast}
+            />
+          </section>
+
+          {/* 5. Event Feed */}
+          <section id="section-feed">
+            <EventFeed attempts={attempts} />
+          </section>
+        </main>
+      </div>
+    </>
   );
 }
-
-export default App;

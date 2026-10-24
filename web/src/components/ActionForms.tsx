@@ -27,6 +27,9 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
   const [expiryHours, setExpiryHours] = useState("168");
   const [showPolicyConfirm, setShowPolicyConfirm] = useState(false);
 
+  // Validation errors
+  const [policyError, setPolicyError] = useState<string | null>(null);
+
   // Set Recipient state
   const [recipientAddress, setRecipientAddress] = useState<string>(
     CONTRACT_ADDRESSES.goodRecipient || ""
@@ -70,7 +73,6 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
     }
   }, [policy?.perTxLimit, policy?.dailyLimit, policy?.validUntil]);
 
-  // Current on-chain display values
   const currentPerTx = policy && policy.perTxLimit > 0n ? formatEth(policy.perTxLimit, 4) : "None";
   const currentDaily = policy && policy.dailyLimit > 0n ? formatEth(policy.dailyLimit, 4) : "None";
   const currentHoursLeft =
@@ -78,7 +80,6 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
       ? Math.max(0, (policy.validUntil - Math.floor(Date.now() / 1000)) / 3600).toFixed(1)
       : "None";
 
-  // Helper to extract revert reason
   const parseRevertReason = (err: any): string => {
     if (err?.shortMessage) return err.shortMessage;
     if (err?.cause?.reason) return err.cause.reason;
@@ -142,6 +143,8 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
   // 1. Set Policy handler
   const handleSetPolicy = async (e: React.FormEvent) => {
     e.preventDefault();
+    setPolicyError(null);
+
     if (!showPolicyConfirm) {
       setShowPolicyConfirm(true);
       return;
@@ -155,11 +158,13 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
       perTxWei = parseEther(perTxLimit);
       dailyWei = parseEther(dailyLimit);
     } catch {
+      setPolicyError("Invalid numeric ETH values.");
       setTxStatus({ status: "error", error: "Invalid numeric ETH values." });
       return;
     }
 
     if (perTxWei > dailyWei) {
+      setPolicyError("Per-tx limit cannot exceed daily limit (PERTX_GT_DAILY).");
       setTxStatus({
         status: "error",
         error: "Per-tx limit cannot exceed daily limit (PERTX_GT_DAILY).",
@@ -169,6 +174,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
 
     const hours = parseFloat(expiryHours);
     if (isNaN(hours) || hours <= 0) {
+      setPolicyError("Expiry hours must be greater than 0.");
       setTxStatus({ status: "error", error: "Expiry hours must be greater than 0." });
       return;
     }
@@ -299,48 +305,33 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
       </div>
 
       {/* Tabs */}
-      <div className="tab-bar">
-        <button
-          type="button"
-          className={`tab-btn ${activeTab === "policy" ? "active" : ""}`}
-          onClick={() => {
-            setActiveTab("policy");
-            setShowPolicyConfirm(false);
-          }}
-        >
-          Set Policy
-        </button>
-        <button
-          type="button"
-          className={`tab-btn ${activeTab === "recipient" ? "active" : ""}`}
-          onClick={() => setActiveTab("recipient")}
-        >
-          Allowlist
-        </button>
-        <button
-          type="button"
-          className={`tab-btn ${activeTab === "fundWallet" ? "active" : ""}`}
-          onClick={() => setActiveTab("fundWallet")}
-        >
-          Fund Wallet
-        </button>
-        <button
-          type="button"
-          className={`tab-btn ${activeTab === "deposit" ? "active" : ""}`}
-          onClick={() => setActiveTab("deposit")}
-        >
-          Gas Deposit
-        </button>
-        <button
-          type="button"
-          className={`tab-btn ${activeTab === "agent" ? "active" : ""}`}
-          onClick={() => {
-            setActiveTab("agent");
-            setConfirmRevoke(false);
-          }}
-        >
-          Agent Key
-        </button>
+      <div className="tab-bar" role="tablist">
+        {(
+          [
+            { id: "policy", label: "Set Policy" },
+            { id: "recipient", label: "Allowlist" },
+            { id: "fundWallet", label: "Fund Wallet" },
+            { id: "deposit", label: "Gas Deposit" },
+            { id: "agent", label: "Agent Key" },
+          ] as { id: TabType; label: string }[]
+        ).map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={`tab-btn ${activeTab === tab.id ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab(tab.id);
+              if (tab.id !== "policy") setShowPolicyConfirm(false);
+              if (tab.id !== "agent") setConfirmRevoke(false);
+              setTxStatus({ status: "idle" });
+              setPolicyError(null);
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       <div className="tab-content">
@@ -356,16 +347,20 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 type="text"
                 className="form-input"
                 value={perTxLimit}
-                onChange={(e) => setPerTxLimit(e.target.value)}
+                onChange={(e) => { setPerTxLimit(e.target.value); setPolicyError(null); }}
                 required
               />
-              <span className="form-hint text-xs text-muted">
+              <span className="form-hint">
                 current: {currentPerTx} ETH
               </span>
             </div>
 
             <div className="form-group">
-              <label className="form-label" htmlFor="policy-daily">
+              <label
+                className="form-label"
+                htmlFor="policy-daily"
+                title="Maximum ETH the agent may spend across all transactions in one UTC day"
+              >
                 Daily Limit (ETH)
               </label>
               <input
@@ -373,10 +368,10 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 type="text"
                 className="form-input"
                 value={dailyLimit}
-                onChange={(e) => setDailyLimit(e.target.value)}
+                onChange={(e) => { setDailyLimit(e.target.value); setPolicyError(null); }}
                 required
               />
-              <span className="form-hint text-xs text-muted">
+              <span className="form-hint">
                 current: {currentDaily} ETH
               </span>
             </div>
@@ -390,15 +385,19 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 type="text"
                 className="form-input"
                 value={expiryHours}
-                onChange={(e) => setExpiryHours(e.target.value)}
+                onChange={(e) => { setExpiryHours(e.target.value); setPolicyError(null); }}
                 required
               />
-              <span className="form-hint text-xs text-muted">
+              <span className="form-hint">
                 current remaining: {currentHoursLeft} hours
               </span>
             </div>
 
-            {/* Confirmation Box if clicked */}
+            {policyError && (
+              <div className="form-error form-col-full">⚠ {policyError}</div>
+            )}
+
+            {/* Confirmation Box */}
             {showPolicyConfirm && (
               <div className="confirm-box form-col-full">
                 <div className="confirm-text text-sm">
@@ -414,7 +413,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                     className="btn btn-primary btn-sm"
                     disabled={isSubmitting}
                   >
-                    Yes, Apply New Policy
+                    {isSubmitting ? <><span className="spinner" /> Applying…</> : "Yes, Apply New Policy"}
                   </button>
                   <button
                     type="button"
@@ -434,14 +433,14 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                   className="btn btn-primary"
                   disabled={isSubmitting}
                 >
-                  {isSubmitting ? "Updating Policy..." : "Update Policy"}
+                  {isSubmitting ? <><span className="spinner" /> Updating Policy…</> : "Update Policy"}
                 </button>
               </div>
             )}
           </form>
         )}
 
-        {/* TAB 2: RECIPIENT */}
+        {/* TAB 2: RECIPIENT (ALLOWLIST) */}
         {activeTab === "recipient" && (
           <form onSubmit={handleSetRecipient} className="form-grid">
             <div className="form-group form-col-full">
@@ -456,9 +455,12 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 onChange={(e) => setRecipientAddress(e.target.value.trim())}
                 required
               />
-              <span className="form-hint text-xs text-muted">
+              <span className="form-hint">
                 Good recipient preset: {CONTRACT_ADDRESSES.goodRecipient}
               </span>
+              {recipientAddress && !isAddress(recipientAddress) && (
+                <span className="form-error">⚠ Not a valid Ethereum address</span>
+              )}
             </div>
 
             <div className="form-group form-col-full">
@@ -491,7 +493,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 className="btn btn-primary"
                 disabled={isSubmitting}
               >
-                {isSubmitting ? "Updating Recipient..." : "Save Recipient Setting"}
+                {isSubmitting ? <><span className="spinner" /> Updating Recipient…</> : "Save Recipient Setting"}
               </button>
             </div>
           </form>
@@ -513,7 +515,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 onChange={(e) => setFundWalletAmount(e.target.value)}
                 required
               />
-              <span className="form-hint text-xs text-muted">
+              <span className="form-hint">
                 Transfers native ETH from Owner account #0 directly to Sentinel Wallet address
               </span>
             </div>
@@ -524,7 +526,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 className="btn btn-primary"
                 disabled={isSubmitting}
               >
-                {isSubmitting ? "Funding Wallet..." : "Fund Wallet with ETH"}
+                {isSubmitting ? <><span className="spinner" /> Funding Wallet…</> : "Fund Wallet with ETH"}
               </button>
             </div>
           </form>
@@ -534,7 +536,11 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
         {activeTab === "deposit" && (
           <form onSubmit={handleAddDeposit} className="form-grid">
             <div className="form-group form-col-full">
-              <label className="form-label" htmlFor="deposit-amount">
+              <label
+                className="form-label"
+                htmlFor="deposit-amount"
+                title="Gas prefund held in EntryPoint. Agent requests pay fees from this."
+              >
                 ETH Amount to Deposit to EntryPoint
               </label>
               <input
@@ -546,8 +552,9 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 onChange={(e) => setDepositAmount(e.target.value)}
                 required
               />
-              <span className="form-hint text-xs text-muted">
-                Calls wallet.addDeposit() which pays EntryPoint.depositTo for UserOp gas reimbursement
+              <span className="form-hint">
+                Calls wallet.addDeposit() which pays EntryPoint.depositTo for UserOp gas reimbursement.
+                Gas prefund held in EntryPoint — agent requests pay fees from this.
               </span>
             </div>
 
@@ -557,7 +564,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 className="btn btn-primary"
                 disabled={isSubmitting}
               >
-                {isSubmitting ? "Depositing Gas..." : "Add EntryPoint Deposit"}
+                {isSubmitting ? <><span className="spinner" /> Depositing Gas…</> : "Add EntryPoint Deposit"}
               </button>
             </div>
           </form>
@@ -596,7 +603,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                       disabled={isSubmitting}
                       onClick={handleRevokeAgent}
                     >
-                      Confirm Revoke
+                      {isSubmitting ? <><span className="spinner" /> Revoking…</> : "Confirm Revoke"}
                     </button>
                     <button
                       type="button"
@@ -611,7 +618,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                 <button
                   type="button"
                   className="btn btn-danger btn-sm"
-                  style={{ marginTop: 12 }}
+                  style={{ marginTop: 12, alignSelf: "flex-start" }}
                   disabled={isSubmitting || Boolean(policy?.isRevoked)}
                   onClick={() => setConfirmRevoke(true)}
                 >
@@ -621,7 +628,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
             </div>
 
             {/* Set / Restore Agent Section */}
-            <form onSubmit={handleSetAgent} className="agent-sub-card form-col-full" style={{ marginTop: 16 }}>
+            <form onSubmit={handleSetAgent} className="agent-sub-card form-col-full" style={{ marginTop: 0 }}>
               <h3 className="text-sm font-semibold">Set / Restore Agent Key</h3>
               <p className="text-xs text-muted">
                 Assign an active agent key (e.g. Account #1 {CONTRACT_ADDRESSES.agent})
@@ -634,14 +641,17 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
                   onChange={(e) => setNewAgentAddress(e.target.value.trim())}
                   required
                 />
+                {newAgentAddress && !isAddress(newAgentAddress) && (
+                  <span className="form-error">⚠ Not a valid Ethereum address</span>
+                )}
               </div>
               <button
                 type="submit"
                 className="btn btn-secondary btn-sm"
-                style={{ marginTop: 8 }}
+                style={{ marginTop: 8, alignSelf: "flex-start" }}
                 disabled={isSubmitting}
               >
-                {isSubmitting ? "Setting Agent..." : "Set Agent Address"}
+                {isSubmitting ? <><span className="spinner" /> Setting Agent…</> : "Set Agent Address"}
               </button>
             </form>
           </div>
@@ -654,9 +664,7 @@ export const ActionForms: React.FC<ActionFormsProps> = ({
             style={{ marginTop: 16 }}
           >
             <div className="tx-status-content">
-              {txStatus.status === "pending" && (
-                <span className="spinner"></span>
-              )}
+              {txStatus.status === "pending" && <span className="spinner" />}
               {txStatus.status === "success" && <span className="icon">✓</span>}
               {txStatus.status === "error" && <span className="icon">✕</span>}
               <span className="tx-status-msg">
