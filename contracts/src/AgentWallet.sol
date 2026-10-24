@@ -33,6 +33,8 @@ contract AgentWallet is IAccount, ReentrancyGuard {
     event AgentRevoked();
     event AgentExecuted(address target, uint256 value, bytes4 selector);
     event OwnerExecuted(address target, uint256 value);
+    event PolicyUpdated(uint256 perTxLimit, uint256 dailyLimit, uint48 validUntil);
+    event RecipientSet(address indexed recipient, bool allowed);
 
     // ΓöÇΓöÇ Custom Errors ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 
@@ -120,6 +122,23 @@ contract AgentWallet is IAccount, ReentrancyGuard {
     /// @notice Allow or disallow a recipient address for the agent. Owner only.
     function setAllowedRecipient(address recipient, bool allowed) external onlyOwner {
         _allowedRecipients[recipient] = allowed;
+    }
+
+    /// @notice Compatibility function for dashboard to update policy. Owner only.
+    function setPolicy(uint256 maxPerTx, uint256 dailyLimit_, uint48 validUntil_) external onlyOwner {
+        _policy = Policy(maxPerTx, dailyLimit_, validUntil_);
+        emit PolicyUpdated(maxPerTx, dailyLimit_, validUntil_);
+    }
+
+    /// @notice Compatibility function for dashboard to set allowed recipient. Owner only.
+    function setRecipient(address recipient, bool allowed) external onlyOwner {
+        _allowedRecipients[recipient] = allowed;
+        emit RecipientSet(recipient, allowed);
+    }
+
+    /// @notice Compatibility function to deposit ETH to EntryPoint for gas prefunding.
+    function addDeposit() external payable {
+        _entryPoint.depositTo{value: msg.value}(address(this));
     }
 
     // ΓöÇΓöÇ Execution functions ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -246,15 +265,15 @@ contract AgentWallet is IAccount, ReentrancyGuard {
         // - execute: ONLY owner can sign
         // - Any other call: reject or require owner
         address expectedSigner;
-        uint48 validUntil = 0;
-        uint48 validAfter = 0;
+        uint48 validUntilTime = 0;
+        uint48 validAfterTime = 0;
 
         if (selector == this.executeAsAgent.selector) {
             expectedSigner = _agent;
             if (expectedSigner == address(0)) {
                 return _packValidationData(true, 0, 0);
             }
-            validUntil = _policy.validUntil;
+            validUntilTime = _policy.validUntil;
         } else if (selector == this.execute.selector) {
             expectedSigner = _owner;
         } else {
@@ -271,7 +290,7 @@ contract AgentWallet is IAccount, ReentrancyGuard {
             (success);
         }
 
-        return _packValidationData(sigFailed, validUntil, validAfter);
+        return _packValidationData(sigFailed, validUntilTime, validAfterTime);
     }
 
     /// @dev Internal signature check using ECDSA tryRecover (supporting eth_sign prefix and raw digest)
@@ -330,5 +349,28 @@ contract AgentWallet is IAccount, ReentrancyGuard {
     /// @notice Check if a recipient is allowed for ETH transfers.
     function isAllowedRecipient(address recipient) external view returns (bool) {
         return _allowedRecipients[recipient];
+    }
+
+    /// @notice Compatibility view function for maxPerTx
+    function perTxLimit() external view returns (uint256) {
+        return _policy.maxPerTx;
+    }
+
+    /// @notice Compatibility view function for dailyLimit
+    function dailyLimit() external view returns (uint256) {
+        return _policy.dailyLimit;
+    }
+
+    /// @notice Compatibility view function for validUntil
+    function validUntil() external view returns (uint48) {
+        return _policy.validUntil;
+    }
+
+    /// @notice Compatibility view function for spentOnDay
+    function spentOnDay(uint256 day) external view returns (uint256) {
+        if (day == _currentDay) {
+            return _spentOnCurrentDay;
+        }
+        return 0;
     }
 }
